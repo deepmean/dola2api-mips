@@ -34,7 +34,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 		{"StrictProxy", cfg.StrictProxy, true},
 		{"EgressRotate", cfg.EgressRotate, "none"},
 		{"RelayMaxBody", cfg.RelayMaxBody, int64(4194304)},
-		{"FirstByteTimeout", cfg.FirstByteTimeout, 25 * time.Second},
+		{"FirstByteTimeout", cfg.FirstByteTimeout, 20 * time.Second},
 		{"SubmitDeadline", cfg.SubmitDeadline, 30 * time.Second},
 		{"HeapSoftLimit", cfg.HeapSoftLimit, int64(32 << 20)},
 		{"MaxConnections", cfg.MaxConnections, 32},

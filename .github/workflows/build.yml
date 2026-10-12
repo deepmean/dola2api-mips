@@ -37,6 +37,22 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # Formatting is enforced here because the port is written without a local
+      # Go toolchain: CI is the formatter. On failure the diff is printed so it
+      # can be applied verbatim.
+      - name: gofmt
+        run: |
+          set -eu
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo 'FAIL: these files are not gofmt-clean:'
+            echo "$unformatted"
+            echo '--- diff ---'
+            gofmt -d .
+            exit 1
+          fi
+          echo 'gofmt clean'
+
       - name: go test
         run: go test -race ./...
 

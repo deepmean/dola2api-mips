@@ -69,6 +69,14 @@ func (c Config) Addr() string { return fmt.Sprintf(":%d", c.Port) }
 func (c Config) EgressActive() bool { return c.EgressMode != "none" }
 
 // Defaults, spelled once so tests and docs cannot drift apart.
+//
+// Two of them come from measuring the live relay (spikes/RESULT.md):
+//   - defaultRelayMaxBody: a 4MiB body passes through the relay, a 5MiB body is
+//     rejected with FUNCTION_PAYLOAD_TOO_LARGE, so 4MiB is the safe ceiling.
+//   - defaultFirstByte: the relay answers 504 once the upstream takes ~25s to
+//     send its first byte (Vercel's documented Edge rule). Waiting the full 25s
+//     would surface the relay's error page instead of our own, so our wait is
+//     shorter and a relay 504 is treated as a retryable egress error.
 const (
 	defaultPort            = 8790
 	defaultMaxConcurrency  = 1
@@ -82,8 +90,8 @@ const (
 	defaultRelayURL        = "https://vcrelay.dmean.dpdns.org/"
 	defaultNoProxy         = "*.volces.com,*.byteimg.com,127.0.0.1,192.168.*"
 	defaultEgressRotate    = "none"
-	defaultRelayMaxBody    = 4 << 20 // 4MiB: 4MiB passes the Vercel relay, 5MiB is 413
-	defaultFirstByte       = 25 * time.Second
+	defaultRelayMaxBody    = 4 << 20
+	defaultFirstByte       = 20 * time.Second
 	defaultSubmitDeadline  = 30 * time.Second
 	defaultStoreMode       = "redirect"
 	defaultMirrorMaxBytes  = 32 << 20
