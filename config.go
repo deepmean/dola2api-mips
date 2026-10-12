@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -264,7 +265,7 @@ func parseFixedZone(raw string) (*time.Location, error) {
 	for name := range fixedZoneMinutes {
 		names = append(names, name)
 	}
-	sortStrings(names)
+	sort.Strings(names)
 	return nil, fmt.Errorf("DOLA_LIMIT_RESET_TZ %q is not a fixed offset this build knows (no tzdata on the router); supported: %s, or an explicit offset like +09:00",
 		raw, strings.Join(names, ", "))
 }
@@ -315,14 +316,6 @@ func parseOffsetMinutes(raw string) (int, bool) {
 		return 0, false
 	}
 	return sign * (hours*60 + minutes), true
-}
-
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
 }
 
 func envOr(getenv func(string) string, key, fallback string) string {

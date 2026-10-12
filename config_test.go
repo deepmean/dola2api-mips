@@ -56,17 +56,20 @@ func TestLoadConfigDefaults(t *testing.T) {
 
 // OpenWrt has no tzdata: the reset zone must be a fixed offset, and the default
 // must not depend on /usr/share/zoneinfo existing.
+//
+// "Does not depend on tzdata" is asserted behaviourally rather than by string
+// comparison: a FixedZone reports the same offset in January and July and
+// IsDST() is always false. A location loaded from zoneinfo would fail one of
+// those for any zone that observes DST.
 func TestLoadConfigResetTZIsFixedOffset(t *testing.T) {
 	cfg, err := LoadConfig(envMap(nil))
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if got := cfg.ResetTZ.String(); got != "+09:00" {
-		t.Errorf("default ResetTZ = %q, want +09:00", got)
+	if got := cfg.ResetTZ.String(); got != "Asia/Tokyo" {
+		t.Errorf("default ResetTZ = %q, want Asia/Tokyo", got)
 	}
-	if _, offset := time.Now().In(cfg.ResetTZ).Zone(); offset != 9*3600 {
-		t.Errorf("default ResetTZ offset = %d, want %d", offset, 9*3600)
-	}
+	assertFixedOffset(t, cfg.ResetTZ, 9*3600)
 
 	for _, tc := range []struct {
 		raw      string
@@ -86,9 +89,24 @@ func TestLoadConfigResetTZIsFixedOffset(t *testing.T) {
 		if cfg.ResetTZ.String() != tc.wantName {
 			t.Errorf("ResetTZ(%q).String() = %q, want %q", tc.raw, cfg.ResetTZ.String(), tc.wantName)
 		}
-		if _, offset := time.Now().In(cfg.ResetTZ).Zone(); offset != tc.wantOff {
-			t.Errorf("ResetTZ(%q) offset = %d, want %d", tc.raw, offset, tc.wantOff)
-		}
+		assertFixedOffset(t, cfg.ResetTZ, tc.wantOff)
+	}
+}
+
+// assertFixedOffset proves loc behaves as a fixed offset: identical offset in
+// mid-winter and mid-summer, and no DST in either.
+func assertFixedOffset(t *testing.T, loc *time.Location, wantOffset int) {
+	t.Helper()
+	winter := time.Date(2026, time.January, 15, 12, 0, 0, 0, time.UTC).In(loc)
+	summer := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC).In(loc)
+
+	_, wOff := winter.Zone()
+	_, sOff := summer.Zone()
+	if wOff != wantOffset || sOff != wantOffset {
+		t.Errorf("offset = %d (Jan) / %d (Jul), want %d in both", wOff, sOff, wantOffset)
+	}
+	if winter.IsDST() || summer.IsDST() {
+		t.Errorf("location %q reports DST, which means it came from tzdata", loc)
 	}
 }
 

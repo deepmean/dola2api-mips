@@ -1,0 +1,79 @@
+{
+  "relay": "https://vcrelay.dmean.dpdns.org/",
+  "proxy": null,
+  "runs": 20,
+  "egresses": [
+    {
+      "name": "direct",
+      "kind": "direct",
+      "reachable": true,
+      "robots": {
+        "status": 200,
+        "first_byte_ms": 1490.5,
+        "total_ms": 1490.7,
+        "length": 22,
+        "head": "User-agent: *\nAllow:/\n"
+      },
+      "ip_error": "ConnectionRefusedError: [WinError 10061] 由于目标计算机积极拒绝，无法连接。",
+      "stability": {
+        "runs": 20,
+        "ok": 20,
+        "success_rate": 1.0,
+        "p50_ms": 519.2,
+        "p95_ms": 599.8,
+        "errors": []
+      }
+    },
+    {
+      "name": "relay",
+      "kind": "vercel",
+      "reachable": true,
+      "robots": {
+        "status": 200,
+        "first_byte_ms": 2264.6,
+        "total_ms": 2264.8,
+        "length": 22,
+        "head": "User-agent: *\nAllow:/\n"
+      },
+      "egress_ip": {
+        "ip": "1.68.94.250"
+      },
+      "stability": {
+        "runs": 20,
+        "ok": 20,
+        "success_rate": 1.0,
+        "p50_ms": 517.8,
+        "p95_ms": 2522.4,
+        "errors": []
+      }
+    }
+  ],
+  "relay_extras": {
+    "missing_header": {
+      "status": 400,
+      "head": "{\"error\":\"Missing x-relay-target header\"}"
+    },
+    "body_4MiB": {
+      "status": 405,
+      "head": "",
+      "total_ms": 16830.5
+    },
+    "body_5MiB": {
+      "status": 413,
+      "head": "Request Entity Too Large\n\nFUNCTION_PAYLOAD_TOO_LARGE\n\nsin1::jgfnv-1791812923117-e5defd08dbbb\n",
+      "total_ms": 3417.5
+    },
+    "drip_direct": {
+      "status": 200,
+      "first_byte_ms": 42042.0,
+      "total_ms": 50252.1,
+      "head": "*****"
+    },
+    "drip_relay": {
+      "status": 504,
+      "first_byte_ms": 26735.9,
+      "total_ms": 26736.0,
+      "head": "An error occurred with your deployment\n\n"
+    }
+  }
+}

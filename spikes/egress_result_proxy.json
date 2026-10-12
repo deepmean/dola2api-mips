@@ -1,0 +1,102 @@
+{
+  "relay": "https://vcrelay.dmean.dpdns.org/",
+  "proxy": "http://127.0.0.1:10808",
+  "runs": 10,
+  "egresses": [
+    {
+      "name": "direct",
+      "kind": "direct",
+      "reachable": true,
+      "robots": {
+        "status": 200,
+        "first_byte_ms": 1431.6,
+        "total_ms": 1431.6,
+        "length": 22,
+        "head": "User-agent: *\nAllow:/\n"
+      },
+      "ip_error": "ConnectionRefusedError: [WinError 10061] 由于目标计算机积极拒绝，无法连接。",
+      "stability": {
+        "runs": 10,
+        "ok": 10,
+        "success_rate": 1.0,
+        "p50_ms": 1444.3,
+        "p95_ms": 2402.8,
+        "errors": []
+      }
+    },
+    {
+      "name": "proxy",
+      "kind": "connect",
+      "reachable": true,
+      "robots": {
+        "status": 200,
+        "first_byte_ms": 2316.2,
+        "total_ms": 2316.3,
+        "length": 22,
+        "head": "User-agent: *\nAllow:/\n"
+      },
+      "egress_ip": {
+        "ip": "23.106.131.181"
+      },
+      "stability": {
+        "runs": 10,
+        "ok": 10,
+        "success_rate": 1.0,
+        "p50_ms": 2361.7,
+        "p95_ms": 3249.2,
+        "errors": []
+      }
+    },
+    {
+      "name": "relay",
+      "kind": "vercel",
+      "reachable": true,
+      "robots": {
+        "status": 200,
+        "first_byte_ms": 546.3,
+        "total_ms": 546.3,
+        "length": 22,
+        "head": "User-agent: *\nAllow:/\n"
+      },
+      "egress_ip": {
+        "ip": "1.68.94.250"
+      },
+      "stability": {
+        "runs": 10,
+        "ok": 10,
+        "success_rate": 1.0,
+        "p50_ms": 570.6,
+        "p95_ms": 3941.5,
+        "errors": []
+      }
+    }
+  ],
+  "relay_extras": {
+    "missing_header": {
+      "status": 400,
+      "head": "{\"error\":\"Missing x-relay-target header\"}"
+    },
+    "body_4MiB": {
+      "status": 405,
+      "head": "",
+      "total_ms": 8708.1
+    },
+    "body_5MiB": {
+      "status": 413,
+      "head": "Request Entity Too Large\n\nFUNCTION_PAYLOAD_TOO_LARGE\n\nsin1::48zj6-1791813199636-a04eeb345a5b\n",
+      "total_ms": 6810.9
+    },
+    "drip_direct": {
+      "status": 503,
+      "first_byte_ms": 2416.1,
+      "total_ms": 2416.2,
+      "head": "<html>\r\n<head><title>503 Service Tempora"
+    },
+    "drip_relay": {
+      "status": 503,
+      "first_byte_ms": 1555.3,
+      "total_ms": 1555.5,
+      "head": "<html>\r\n<head><title>503 Service Tempora"
+    }
+  }
+}
