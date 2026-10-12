@@ -52,30 +52,17 @@ jobs:
           fi
           echo 'go.mod has no dependencies'
 
-      # Memory is the binding constraint on a 250MB router, so "use less flash"
-      # tricks that cost RAM are banned outright (UPX inflates the image at exec
-      # time; the router has 44MB of free flash and no spare RAM).
-      #
-      # The scan skips .git and this workflow file, because the guard itself
-      # necessarily contains the word it searches for.
-      - name: Assert no UPX (memory > flash)
-        run: |
-          set -eu
-          if grep -rIn --exclude-dir=.git --exclude=build.yml -iE '(^|[^a-z])upx([^a-z]|$)' . ; then
-            echo 'FAIL: UPX (or a reference to it) found. UPX inflates the image in RAM at exec time;'
-            echo '      flash is not the constraint on this device, memory is.'
-            exit 1
-          fi
-          echo 'no UPX usage'
-
       # Every upstream request must leave through the egress layer. A stray
-      # http.Transport or net.Dial outside egress*.go would bypass the relay and
+      # http.Transport or net.Dial in shipped code would bypass the relay and
       # leak the router's real address upstream.
+      #
+      # Test files are excluded on purpose: they legitimately dial local
+      # httptest listeners, which is not outbound traffic to the upstream.
       - name: Assert no bypass of the egress layer
         run: |
           set -eu
-          hits=$(grep -rIn --include='*.go' -E 'http\.Transport\{|net\.Dial\(' . \
-                 | grep -v '/egress' | grep -v '^\./egress' || true)
+          hits=$(grep -rIn --include='*.go' --exclude='*_test.go' -E 'http\.Transport\{|net\.Dial\(' . \
+                 | grep -v '/egress' || true)
           if [ -n "$hits" ]; then
             echo 'FAIL: outbound HTTP outside the egress layer:'
             echo "$hits"
@@ -137,6 +124,24 @@ jobs:
           if readelf -l "$bin" | grep -q 'INTERP'; then
             echo 'FAIL: dynamically linked (has an interpreter)'; exit 1
           fi
+
+          # Memory is the binding constraint on this device (44MB of free flash,
+          # no spare RAM), so "save flash, spend RAM" tricks are banned. Assert
+          # the property on the artifact rather than scanning the repo for the
+          # word: documentation has to stay free to explain the ban.
+          #
+          #   - the UPX magic string is present in any UPX-compressed image
+          #   - UPX removes the section header table, so a surviving .text
+          #     section header proves an ordinary uncompressed ELF
+          if grep -qa 'UPX!' "$bin"; then
+            echo 'FAIL: UPX magic found in the binary; UPX inflates the image in RAM at exec time'
+            exit 1
+          fi
+          if ! readelf -S "$bin" | grep -q '\.text'; then
+            echo 'FAIL: no .text section header; the ELF section table looks stripped (UPX?)'
+            exit 1
+          fi
+          echo 'not UPX-compressed: section table intact, no UPX magic'
 
           size=$(stat -c%s "$bin")
           echo "size: $size bytes"

@@ -55,9 +55,12 @@ chmod +x /tmp/dola2api.new
 CI 还带三条门禁：
 
 1. `go.mod` 无 `require`（保持纯标准库、可复现构建）
-2. **禁止 UPX**（UPX 在 `exec` 时把整份镜像解压进内存：这台设备 flash 还剩 44MB 不缺，
-   缺的是 RAM；用内存换 flash 是反的）
-3. 除 `egress*.go` 外禁止出现 `http.Transport{` 与 `net.Dial(`（防止绕过出口层）
+2. **产物未被 UPX 压缩**：断言二进制里没有 UPX 魔数、且 ELF 节头表完好
+   （UPX 会剥掉节头表）。用内存换 flash 在这台设备上是反的——flash 还剩 44MB 不缺，
+   缺的是 RAM，而 UPX 在 `exec` 时把整份镜像解压进内存。断言写在**产物**上而不是
+   扫仓库里的字眼，否则连解释这条禁令的文档都会被判违规。
+3. 除 `egress*.go` 外禁止出现 `http.Transport{` 与 `net.Dial(`（防止绕过出口层；
+   测试文件除外，它们会连本地 httptest 监听）
 
 ## 资源预算
 
