@@ -82,11 +82,11 @@ func TestHealthEmptyPool(t *testing.T) {
 // the WAN in the deployed setup.
 func TestHealthDoesNotLeakSecrets(t *testing.T) {
 	env := map[string]string{
-		"DOLA_RELAY_URL":    "https://relay.example/secret-path",
-		"DOLA_RELAY_KEY":    "super-secret-relay-key",
-		"DOLA_API_KEYS":     "sk-secret-api-key",
-		"DOLA_ADMIN_KEY":    "secret-admin-key",
-		"DOLA_PROXY_URL":    "",
+		"DOLA_RELAY_URL":     "https://relay.example/secret-path",
+		"DOLA_RELAY_KEY":     "super-secret-relay-key",
+		"DOLA_API_KEYS":      "sk-secret-api-key",
+		"DOLA_ADMIN_KEY":     "secret-admin-key",
+		"DOLA_PROXY_URL":     "",
 		"DOLA_SIDECAR_TOKEN": "secret-sidecar-token",
 	}
 	cfg, err := LoadConfig(envMap(env))
