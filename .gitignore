@@ -1,0 +1,12 @@
+# Build output
+dist/
+*.exe
+
+# Local runtime state (never committed: accounts, proxies, tasks, downloads)
+accounts.json
+proxies.json
+tasks.jsonl
+pool_usage.db
+dola2api.conf
+downloads/
+*.log

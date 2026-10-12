@@ -1,0 +1,175 @@
+name: build
+
+# Cloud build for the MIPS32 target (ramips/mt7621, OpenWrt).
+#
+# The release binary is produced here rather than on a workstation so the
+# toolchain and the build flags are reproducible for every build. To ship a new
+# binary: push to main (rolling `latest` prerelease) or tag a commit `v*`
+# (a normal release).
+#
+# GOMIPS=softfloat is mandatory -- MT7621 has no usable FPU and a hard-float
+# build crashes on the device. The verify step asserts this at the ELF level
+# before anything is uploaded, so a bad binary can never reach a release.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: vet + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          # The module has no dependencies, so there is no module cache to keep.
+          cache: false
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race ./...
+
+      # The port must stay stdlib-only: an accidental dependency would break the
+      # "no module cache, reproducible build" property this workflow relies on.
+      - name: Assert zero dependencies
+        run: |
+          set -eu
+          if grep -qE '^[[:space:]]*require' go.mod; then
+            echo 'FAIL: go.mod has a require block; this port is stdlib-only'
+            cat go.mod
+            exit 1
+          fi
+          echo 'go.mod has no dependencies'
+
+      # Memory is the binding constraint on a 250MB router, so "use less flash"
+      # tricks that cost RAM are banned outright (UPX inflates the image at exec
+      # time; the router has 44MB of free flash and no spare RAM).
+      #
+      # The scan skips .git and this workflow file, because the guard itself
+      # necessarily contains the word it searches for.
+      - name: Assert no UPX (memory > flash)
+        run: |
+          set -eu
+          if grep -rIn --exclude-dir=.git --exclude=build.yml -iE '(^|[^a-z])upx([^a-z]|$)' . ; then
+            echo 'FAIL: UPX (or a reference to it) found. UPX inflates the image in RAM at exec time;'
+            echo '      flash is not the constraint on this device, memory is.'
+            exit 1
+          fi
+          echo 'no UPX usage'
+
+      # Every upstream request must leave through the egress layer. A stray
+      # http.Transport or net.Dial outside egress*.go would bypass the relay and
+      # leak the router's real address upstream.
+      - name: Assert no bypass of the egress layer
+        run: |
+          set -eu
+          hits=$(grep -rIn --include='*.go' -E 'http\.Transport\{|net\.Dial\(' . \
+                 | grep -v '/egress' | grep -v '^\./egress' || true)
+          if [ -n "$hits" ]; then
+            echo 'FAIL: outbound HTTP outside the egress layer:'
+            echo "$hits"
+            exit 1
+          fi
+          echo 'no egress bypass found'
+
+  build:
+    name: cross-compile mipsle
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build
+        env:
+          GOOS: linux
+          GOARCH: mipsle
+          GOMIPS: softfloat
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p dist
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${GITHUB_SHA::7}" \
+            -o dist/dola2api-linux-mipsle .
+
+      # Fail here rather than ship a binary that dies on the router. Each
+      # assertion below corresponds to a real failure mode:
+      #   - wrong machine / endianness: the kernel refuses to exec it
+      #   - hard float: exec succeeds, then it crashes on first FP use
+      #   - dynamic: the router image has no matching interpreter
+      - name: Verify the binary
+        run: |
+          set -eu
+          bin=dist/dola2api-linux-mipsle
+          file "$bin"
+
+          hdr=$(readelf -h "$bin")
+          echo "$hdr"
+          echo '--- MIPS ABI flags ---'
+          abi=$(readelf -A "$bin")
+          echo "$abi"
+
+          echo '--- assertions ---'
+          echo "$hdr" | grep -q 'Class:.*ELF32'        || { echo 'FAIL: not ELF32'; exit 1; }
+          echo "$hdr" | grep -q 'little endian'        || { echo 'FAIL: not little endian'; exit 1; }
+          echo "$hdr" | grep -q 'Machine:.*MIPS'       || { echo 'FAIL: not MIPS'; exit 1; }
+
+          # binutils prints "FP ABI: Soft float" for fp_abi=3, which is what the
+          # Go linker writes when GOMIPS=softfloat.
+          echo "$abi" | grep -qi 'soft float'          || { echo 'FAIL: not soft-float; would crash on MT7621'; exit 1; }
+
+          # Static: no interpreter and no dynamic section.
+          if readelf -l "$bin" | grep -q 'INTERP'; then
+            echo 'FAIL: dynamically linked (has an interpreter)'; exit 1
+          fi
+
+          size=$(stat -c%s "$bin")
+          echo "size: $size bytes"
+          # Bloat guard, not a resource target: a sudden jump means code that was
+          # never reviewed for the router made it in.
+          if [ "$size" -gt 7864320 ]; then
+            echo 'FAIL: binary exceeds 7.5MB bloat guard'; exit 1
+          fi
+
+          echo 'all checks passed'
+          ls -l "$bin"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dola2api-linux-mipsle-${{ github.sha }}
+          path: dist/dola2api-linux-mipsle
+          if-no-files-found: error
+
+      # A rolling prerelease so a stable download URL always exists -- fetch it
+      # straight onto a router with wget.
+      - name: Publish rolling latest
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build (main)
+          prerelease: true
+          files: dist/dola2api-linux-mipsle
+          body: |
+            Automatic build of `${{ github.sha }}`.
+
+            ```sh
+            wget -O /tmp/dola2api.new \
+              https://github.com/deepmean/dola2api-mips/releases/download/latest/dola2api-linux-mipsle
+            chmod +x /tmp/dola2api.new
+            ```

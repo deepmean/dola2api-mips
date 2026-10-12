@@ -1,0 +1,15 @@
+# The router runs Linux: a CRLF shell script fails with "$'\r': not found".
+# Force LF for everything that is executed or parsed on the device.
+* text=auto
+*.go   text eol=lf
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.conf text eol=lf
+*.md   text eol=lf
+go.mod text eol=lf
+
+# Procd init scripts and deploy helpers must never be CRLF.
+deploy/init.d-* text eol=lf
+deploy/deploy.sh text eol=lf
+deploy/*.sh text eol=lf
