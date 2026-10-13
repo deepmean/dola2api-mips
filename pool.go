@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"sync"
 	"time"
 )
@@ -32,6 +33,11 @@ type Task struct {
 	CreatedAt  time.Time
 	StartedAt  time.Time
 	FinishedAt time.Time
+
+	// seq orders tasks for listing. It exists because CreatedAt is not a
+	// reliable ordering: several tasks can be created within one clock tick,
+	// which makes a sort by timestamp non-deterministic.
+	seq uint64
 }
 
 // ErrPoolFull means the pending queue is at its configured bound.
@@ -58,6 +64,7 @@ type Pool struct {
 	queue   []*Task
 	running int
 	closed  bool
+	nextSeq uint64
 	wake    chan struct{}
 	done    chan struct{}
 }
@@ -136,11 +143,13 @@ func (p *Pool) Submit(req SubmitRequest) (Task, error) {
 		return Task{}, ErrPoolFull
 	}
 
+	p.nextSeq++
 	task := &Task{
 		ID:        newUUID(),
 		Request:   req,
 		State:     TaskPending,
 		CreatedAt: time.Now(),
+		seq:       p.nextSeq,
 	}
 	p.tasks[task.ID] = task
 	p.queue = append(p.queue, task)
@@ -167,6 +176,27 @@ func (p *Pool) Pending() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.queue) + p.running
+}
+
+// List returns up to limit task snapshots, newest first.
+func (p *Pool) List(limit int) []Task {
+	if limit <= 0 {
+		limit = 50
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	out := make([]Task, 0, len(p.tasks))
+	for _, task := range p.tasks {
+		snapshot := *task
+		snapshot.Videos = append([]Video(nil), task.Videos...)
+		out = append(out, snapshot)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].seq > out[j].seq })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
 }
 
 // worker runs one task at a time.

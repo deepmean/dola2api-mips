@@ -17,6 +17,11 @@ func newTestAPI(t *testing.T, exec Executor, cfg Config) (*api, *Pool, *AccountS
 	pool, accounts, _ := newTestPool(t, exec, cfg)
 	cfg.APIKeys = []string{"sk-test"}
 	cfg.AdminKey = "admin-test"
+	// Match the pool's own bounds, so the API's view of the configuration is the
+	// one actually in force.
+	cfg.MaxPendingTasks = pool.cfg.MaxPendingTasks
+	cfg.MaxConcurrency = pool.cfg.MaxConcurrency
+	cfg.Executor = "protocol"
 
 	egress, err := NewEgress(Config{EgressMode: "direct"})
 	if err != nil {
@@ -28,7 +33,7 @@ func newTestAPI(t *testing.T, exec Executor, cfg Config) (*api, *Pool, *AccountS
 		t.Fatalf("NewRetriever: %v", err)
 	}
 	guard := NewGuard(0, func() {}, false)
-	return newAPI(cfg, guard, pool, retriever), pool, accounts
+	return newAPI(cfg, guard, pool, retriever, accounts, nil), pool, accounts
 }
 
 func doRequest(t *testing.T, handler http.Handler, method, path, body, token string) *httptest.ResponseRecorder {
@@ -50,7 +55,7 @@ func TestAPIRefusesWithoutKeys(t *testing.T) {
 	exec := &fakeExecutor{conversationID: "conv-1"}
 	pool, _, _ := newTestPool(t, exec, Config{})
 	cfg := Config{} // no keys at all
-	api := newAPI(cfg, NewGuard(0, func() {}, false), pool, nil)
+	api := newAPI(cfg, NewGuard(0, func() {}, false), pool, nil, nil, nil)
 
 	rec := doRequest(t, apiRouter(api), http.MethodPost, "/v1/videos", `{"prompt":"a cat"}`, "")
 	if rec.Code != http.StatusServiceUnavailable {

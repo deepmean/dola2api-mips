@@ -112,15 +112,25 @@ func constantTimeEquals(a, b string) bool {
 
 // api bundles the handlers' dependencies.
 type api struct {
-	cfg       Config
-	guard     *Guard
-	auth      *authenticator
-	pool      *Pool
-	retriever *Retriever
+	cfg         Config
+	guard       *Guard
+	auth        *authenticator
+	pool        *Pool
+	retriever   *Retriever
+	accounts    *AccountStore
+	egressState func() egressHealth
 }
 
-func newAPI(cfg Config, guard *Guard, pool *Pool, retriever *Retriever) *api {
-	return &api{cfg: cfg, guard: guard, auth: newAuthenticator(cfg), pool: pool, retriever: retriever}
+func newAPI(cfg Config, guard *Guard, pool *Pool, retriever *Retriever, accounts *AccountStore, egressState func() egressHealth) *api {
+	return &api{
+		cfg:         cfg,
+		guard:       guard,
+		auth:        newAuthenticator(cfg),
+		pool:        pool,
+		retriever:   retriever,
+		accounts:    accounts,
+		egressState: egressState,
+	}
 }
 
 // register adds the API routes to mux.
@@ -128,6 +138,7 @@ func (a *api) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/videos", a.withAuth(a.handleCreate))
 	mux.HandleFunc("GET /v1/videos/{id}", a.withAuth(a.handleGet))
 	mux.HandleFunc("GET /v1/videos/{id}/content", a.withAuth(a.handleContent))
+	a.registerAdmin(mux)
 }
 
 // withAuth wraps a handler with the key check and the heap soft limit.

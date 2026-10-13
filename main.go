@@ -164,9 +164,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("store: %v", err)
 	}
-	srv.api = newAPI(cfg, guard, pool, retriever)
+	srv.api = newAPI(cfg, guard, pool, retriever, accounts, egress.State)
 	if !srv.api.auth.configured() {
 		log.Printf("no API keys configured: /v1/* will answer 503 until DOLA_API_KEYS is set")
+	}
+	if cfg.AdminKey == "" {
+		log.Printf("no admin key configured: /admin/* will answer 503 until DOLA_ADMIN_KEY is set")
 	}
 
 	raw, err := net.Listen("tcp", cfg.Addr())
