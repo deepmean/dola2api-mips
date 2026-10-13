@@ -312,12 +312,18 @@ func (a *api) validate(req apiRequest, defaultKind string) (SubmitRequest, error
 
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
-		model = defaultVideoModel
+		// The default depends on what is being asked for: an image request has
+		// no video model to name.
+		if kind == "image" {
+			model = defaultImageModel
+		} else {
+			model = defaultVideoModel
+		}
 	}
 	if len(model) > 64 {
 		return SubmitRequest{}, errors.New("model name is too long")
 	}
-	if !a.modelAllowed(model) {
+	if !a.modelAllowed(kind, model) {
 		return SubmitRequest{}, fmt.Errorf("unknown model %q; GET /v1/models lists the ones this service offers", model)
 	}
 

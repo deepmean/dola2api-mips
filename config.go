@@ -74,6 +74,10 @@ type Config struct {
 	// POST /v1/videos accepts. Overridable because the upstream identifier is
 	// not something this project can pin down from the outside.
 	VideoModels []string
+	// ImageModels and ChatModels are the ids GET /v1/models offers for those two
+	// kinds. They are this service's own names; a client needs an id to select.
+	ImageModels []string
+	ChatModels  []string
 
 	// ChatTimeout bounds one text turn. Chat does not go through the task pool,
 	// so it needs its own deadline rather than the video one.
@@ -151,6 +155,8 @@ const (
 	defaultStoreMode       = "redirect"
 	// defaultVideoModel is what the upstream submit body carries. The web
 	// client's own display tag for it is "Seedance 2.0".
+	defaultImageModel = "dola-image"
+	defaultChatModel  = "dola-chat"
 	defaultVideoModel = "seedance_v2.0"
 	// defaultMirrorDir is on tmpfs so a mirror never fills the overlay.
 	defaultMirrorDir = "/tmp/dola2api-mirror"
@@ -369,6 +375,14 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	cfg.VideoModels = envList(getenv, "DOLA_VIDEO_MODELS")
 	if len(cfg.VideoModels) == 0 {
 		cfg.VideoModels = []string{defaultVideoModel}
+	}
+	cfg.ImageModels = envList(getenv, "DOLA_IMAGE_MODELS")
+	if len(cfg.ImageModels) == 0 {
+		cfg.ImageModels = []string{defaultImageModel}
+	}
+	cfg.ChatModels = envList(getenv, "DOLA_CHAT_MODELS")
+	if len(cfg.ChatModels) == 0 {
+		cfg.ChatModels = []string{defaultChatModel}
 	}
 
 	if cfg.ReferenceImageMaxBytes, err = envInt64(getenv, "DOLA_REFERENCE_IMAGE_MAX_BYTES", defaultRefImageBytes); err != nil {

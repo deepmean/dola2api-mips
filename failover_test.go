@@ -27,31 +27,86 @@ func TestModelsEndpointListsTheConfiguredModels(t *testing.T) {
 	if listed.Object != "list" {
 		t.Errorf("object = %q, want list", listed.Object)
 	}
-	if len(listed.Data) != 1 {
-		t.Fatalf("models = %+v, want the single default", listed.Data)
+
+	byKind := map[string]modelInfo{}
+	for _, m := range listed.Data {
+		byKind[m.Kind] = m
+		if m.Object != "model" || m.OwnedBy == "" || m.ID == "" {
+			t.Errorf("model = %+v", m)
+		}
 	}
-	model := listed.Data[0]
-	if model.ID != defaultVideoModel {
-		t.Errorf("id = %q, want %q", model.ID, defaultVideoModel)
+	// A client selects a model by id and has no other way to learn which
+	// endpoint that id belongs to, so every kind this service serves has to be
+	// offered. Offering only the video model is what made a chat-capable service
+	// look like it could not chat.
+	for _, kind := range []string{"video", "image", "chat"} {
+		if _, ok := byKind[kind]; !ok {
+			t.Errorf("the listing offers no %s model: %+v", kind, listed.Data)
+		}
 	}
-	if model.Object != "model" || model.OwnedBy == "" {
-		t.Errorf("model = %+v", model)
+	if byKind["video"].ID != defaultVideoModel {
+		t.Errorf("video id = %q, want %q", byKind["video"].ID, defaultVideoModel)
 	}
-	if len(model.Ratios) == 0 || len(model.Durations) == 0 {
-		t.Errorf("the listing does not describe what the service accepts: %+v", model)
+	if len(byKind["video"].Ratios) == 0 || len(byKind["video"].Durations) == 0 {
+		t.Errorf("the video entry does not describe what the service accepts: %+v", byKind["video"])
+	}
+	if len(byKind["chat"].Ratios) != 0 || len(byKind["chat"].Durations) != 0 {
+		t.Errorf("the chat entry carries video options: %+v", byKind["chat"])
 	}
 }
 
 func TestModelsEndpointHonoursTheConfiguredList(t *testing.T) {
 	exec := &fakeExecutor{conversationID: "conv-1"}
-	cfg := Config{VideoModels: []string{"seedance_v2.0", "seedance_v2.5"}}
+	cfg := Config{
+		VideoModels: []string{"seedance_v2.0", "seedance_v2.5"},
+		ImageModels: []string{"my-image"},
+		ChatModels:  []string{"my-chat"},
+	}
 	api, _, _ := newTestAPI(t, exec, cfg)
 
 	rec := doRequest(t, apiRouter(api), http.MethodGet, "/v1/models", "", "sk-test")
 	var listed modelListResponse
 	_ = json.Unmarshal(rec.Body.Bytes(), &listed)
-	if len(listed.Data) != 2 {
-		t.Fatalf("models = %+v, want both configured", listed.Data)
+
+	ids := map[string]string{}
+	for _, m := range listed.Data {
+		ids[m.Kind] = m.ID
+	}
+	if ids["video"] != "seedance_v2.0" && ids["video"] != "seedance_v2.5" {
+		t.Errorf("video id = %q, want one of the configured pair", ids["video"])
+	}
+	if ids["image"] != "my-image" || ids["chat"] != "my-chat" {
+		t.Errorf("configured names were not used: %+v", ids)
+	}
+	if len(listed.Data) != 4 {
+		t.Errorf("models = %d, want two video plus one image and one chat", len(listed.Data))
+	}
+}
+
+// Each endpoint accepts its own model ids and refuses the others, so selecting a
+// model in a client cannot silently send a video request to the chat endpoint.
+func TestModelIdsAreCheckedPerKind(t *testing.T) {
+	exec := &fakeExecutor{conversationID: "conv-1"}
+	cfg := Config{VideoModels: []string{"v-model"}, ImageModels: []string{"i-model"}, ChatModels: []string{"c-model"}}
+	api, _, _ := newTestAPI(t, exec, cfg)
+	router := apiRouter(api)
+
+	cases := []struct {
+		path  string
+		body  string
+		want  int
+		label string
+	}{
+		{"/v1/videos", `{"prompt":"x","model":"v-model"}`, http.StatusAccepted, "video endpoint takes the video model"},
+		{"/v1/videos", `{"prompt":"x","model":"c-model"}`, http.StatusBadRequest, "video endpoint refuses the chat model"},
+		{"/v1/images", `{"prompt":"x","model":"i-model"}`, http.StatusAccepted, "image endpoint takes the image model"},
+		{"/v1/images", `{"prompt":"x","model":"v-model"}`, http.StatusBadRequest, "image endpoint refuses the video model"},
+	}
+	for _, c := range cases {
+		rec := doRequest(t, router, http.MethodPost, c.path, c.body, "sk-test")
+		if rec.Code != c.want {
+			t.Errorf("%s: status = %d, want %d (%s)", c.label, rec.Code, c.want, rec.Body.String())
+		}
 	}
 }
 
