@@ -514,7 +514,7 @@ const (
 	skillVideo = 17
 	// skillImage is image generation. The upstream Python used 16, which is
 	// SkillCodeAssistant: /samantha/skill/pack answers 710010702 for 16 and 0
-	// for 3, and the skill table reports 3 as "闂侀潻闄勯悧婊勬櫠閺嶎厽鍋ㄩ柣鏃傤焾閻?. That Python branch had
+	// for 3, and the skill table reports 3 as "闂備線娼婚梽鍕偋濠婂嫭娅犻柡宥庡幗閸嬨劑鏌ｉ弮鍌ょ劸闁?. That Python branch had
 	// no callers, so it was never validated.
 	skillImage = 3
 )
@@ -730,21 +730,28 @@ func readAck(r *bufio.Reader) (string, error) {
 	}
 }
 
-// ErrUpstreamRateLimited marks a submit refusal that is about the path rather
-// than the account.
+// ErrUpstreamRateLimited marks a submit refusal with the upstream's "cannot
+// generate right now" codes.
 //
-// Measured: the first submit of a session is accepted and the ones that follow
-// are refused with 710022002 or 710022004, across every account and after a
-// quiet period. That makes these codes a statement about how fast submits are
-// arriving, not about which session is asking — so retrying with another account
-// spends the budget faster instead of helping.
-var ErrUpstreamRateLimited = errors.New("upstream rate limited")
+// The name says rate, and the first reading of the evidence was that it was
+// about submit rate 鈥?the failover burned three submits in a row and all three
+// were refused. Polling the one conversation that a submit did create showed
+// what is actually happening: the reply is 浠婂ぉ鐨勭敓鎴愭鏁稿凡缍撻仈鍒颁笂闄愶紝鏄庡ぉ鍐嶄締鍏嶈不鐢熸垚鍚?
+// the account's daily generation allowance is spent. That makes the codes a
+// per-account condition after all 鈥?one session passed the submit layer while
+// three others were refused in the same minute 鈥?so failing over is the right
+// response and is left in place.
+//
+// The codes are still classified, because the distinction is worth reporting:
+// "this session cannot generate" reads very differently from "the request was
+// malformed", and an operator who sees it knows to wait for the allowance to
+// reset or to add a session rather than to look for a bug.
+var ErrUpstreamRateLimited = errors.New("upstream will not generate right now")
 
-// rateLimitedCodes are the refusals that mean "too many submits", not "this
-// session is broken".
-var rateLimitedCodes = map[string]bool{
-	"710022002": true, // 目前服務使用人數較多 — high demand
-	"710022004": true, // shark_admin slide challenge
+// quotaCodes are the refusals that mean "not now, for this session".
+var quotaCodes = map[string]bool{
+	"710022002": true, // 鐩墠鏈嶅嫏浣跨敤浜烘暩杓冨 鈥?high demand
+	"710022004": true, // shark_admin challenge, also returned once the daily allowance is spent
 }
 
 // handleEvent reports whether the event ends the read, and why.
@@ -767,7 +774,7 @@ func handleEvent(event, data string) (conversationID string, stop bool, err erro
 		}
 		if json.Unmarshal([]byte(data), &failure) == nil {
 			code := formatErrorCode(failure.ErrorCode)
-			if rateLimitedCodes[code] {
+			if quotaCodes[code] {
 				return "", true, fmt.Errorf("%w: %s %s", ErrUpstreamRateLimited, code, failure.ErrorMsg)
 			}
 			return "", true, fmt.Errorf("upstream refused: %s %s", code, failure.ErrorMsg)

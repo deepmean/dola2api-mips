@@ -11,10 +11,10 @@ import (
 	"time"
 )
 
-// The two refusal codes mean "too many submits", and a retry spends the same
-// budget for the same answer. Measured: the first submit of a session is
-// accepted and the next three are refused, across every account.
-func TestRateLimitedRefusalsAreRecognised(t *testing.T) {
+// The two codes mean "this session cannot generate right now", which is worth
+// reporting distinctly: an operator who sees it waits for the allowance to reset
+// or adds a session, rather than looking for a bug in the request.
+func TestQuotaRefusalsAreRecognised(t *testing.T) {
 	for _, code := range []string{"710022002", "710022004"} {
 		stream := fmt.Sprintf("id: 0\nevent: STREAM_ERROR\ndata: {\"error_code\":%s,\"error_msg\":\"refused\"}\n\n", code)
 		_, err := readAck(bufio.NewReader(strings.NewReader(stream)))
@@ -22,7 +22,7 @@ func TestRateLimitedRefusalsAreRecognised(t *testing.T) {
 			t.Fatalf("%s was reported as success", code)
 		}
 		if !errors.Is(err, ErrUpstreamRateLimited) {
-			t.Errorf("%s was not classified as a rate limit: %v", code, err)
+			t.Errorf("%s was not classified: %v", code, err)
 		}
 		if !strings.Contains(err.Error(), code) {
 			t.Errorf("%s is missing from the message: %v", code, err)
@@ -30,49 +30,48 @@ func TestRateLimitedRefusalsAreRecognised(t *testing.T) {
 	}
 }
 
-// Any other refusal is about the session, so failover is the right response and
-// it must not be classified as a rate limit.
-func TestOtherRefusalsAreNotRateLimits(t *testing.T) {
+// Any other refusal is a different condition and must not be folded in with it.
+func TestOtherRefusalsAreNotClassifiedAsQuota(t *testing.T) {
 	stream := "id: 0\nevent: STREAM_ERROR\ndata: {\"error_code\":710012001,\"error_msg\":\"login invalid\"}\n\n"
 	_, err := readAck(bufio.NewReader(strings.NewReader(stream)))
 	if err == nil {
 		t.Fatal("a refusal was reported as success")
 	}
 	if errors.Is(err, ErrUpstreamRateLimited) {
-		t.Errorf("a login failure was classified as a rate limit: %v", err)
+		t.Errorf("a login failure was classified as a quota refusal: %v", err)
 	}
 }
 
-// rateLimitExecutor refuses every submit the way the upstream does when it is
-// refusing by rate rather than by session.
-type rateLimitExecutor struct {
+// quotaExecutor refuses every submit the way a session with no allowance left does.
+type quotaExecutor struct {
 	mu    sync.Mutex
 	calls int
 }
 
-func (f *rateLimitExecutor) Name() string { return "rate-limited" }
+func (f *quotaExecutor) Name() string { return "out-of-quota" }
 
-func (f *rateLimitExecutor) Submit(context.Context, string, SubmitRequest) (string, error) {
+func (f *quotaExecutor) Submit(context.Context, string, SubmitRequest) (string, error) {
 	f.mu.Lock()
 	f.calls++
 	f.mu.Unlock()
 	return "", fmt.Errorf("%w: 710022004 rate limited", ErrUpstreamRateLimited)
 }
 
-func (f *rateLimitExecutor) callCount() int {
+func (f *quotaExecutor) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls
 }
 
-// The point of the classification: three sessions that are all refused for the
-// same rate reason must cost one submit, not three. Measured on the device, the
-// failover burned three submits and then failed anyway.
-func TestPoolDoesNotFailOverOnARateLimitRefusal(t *testing.T) {
-	exec := &rateLimitExecutor{}
+// A refusal of this kind is a property of the session, so every session must
+// still be tried before the task gives up. Polling the one conversation a submit
+// did create showed why: the reply was 浠婂ぉ鐨勭敓鎴愭鏁稿凡缍撻仈鍒颁笂闄?鈥?the account's
+// daily allowance is spent, which is per-session, not a statement about the path.
+func TestPoolStillFailsOverOnAQuotaRefusal(t *testing.T) {
+	exec := &quotaExecutor{}
 	pool, _, _ := newTestPoolWithAccounts(t, exec,
 		`[{"label":"a","cookie":"sessionid=aaa"},{"label":"b","cookie":"sessionid=bbb"},{"label":"c","cookie":"sessionid=ccc"}]`)
-	pool.cfg.SubmitInterval = 0 // pacing is a separate behaviour
+	pool.cfg.SubmitInterval = 0
 	ctx, cancel := newTestContext()
 	defer cancel()
 	pool.Start(ctx)
@@ -84,16 +83,12 @@ func TestPoolDoesNotFailOverOnARateLimitRefusal(t *testing.T) {
 	}
 	done := waitForState(t, pool, task.ID, TaskFailed)
 
-	if exec.callCount() != 1 {
-		t.Errorf("the executor was called %d time(s); a rate limit is not a per-session fault, "+
-			"so retrying spends the same budget for the same answer", exec.callCount())
+	if exec.callCount() != 3 {
+		t.Errorf("the executor was called %d time(s), want one per session: a spent allowance "+
+			"is per-session, so the other two might still have one", exec.callCount())
 	}
-	if !errors.Is(errors.New(done.Error), ErrUpstreamRateLimited) &&
-		!strings.Contains(done.Error, "rate") {
-		t.Errorf("error = %q, want it to say the refusal was about rate", done.Error)
-	}
-	if !strings.Contains(done.Error, "another session would not help") {
-		t.Errorf("error = %q, want it to explain why there was no failover", done.Error)
+	if !strings.Contains(done.Error, "every session failed") {
+		t.Errorf("error = %q, want it to say every session was tried", done.Error)
 	}
 }
 

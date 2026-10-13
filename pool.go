@@ -299,19 +299,12 @@ func (p *Pool) run(ctx context.Context, task *Task) {
 		p.accounts.RecordFailure(candidate, time.Now(), err)
 		p.logger.Printf("task %s: attempt %d/%d with %q failed: %v",
 			task.ID, attempt, attempts, candidate.Label, err)
-
-		// A rate-limit refusal is about how fast submits are arriving, so
-		// another session would spend the same budget to get the same answer.
-		// Measured: one submit succeeded and the next three were refused, and
-		// the failover then burned three more before giving up.
-		if errors.Is(err, ErrUpstreamRateLimited) {
-			p.fail(task, fmt.Errorf("%w (tried %d session(s); the refusal is about submit rate, so another session would not help)",
-				err, attempt))
-			return
-		}
 	}
 	if lastErr != nil {
-		p.fail(task, lastErr)
+		// Say how many sessions were tried. Without the count, "one session is
+		// out of allowance" and "every session is" look identical, and those
+		// call for different responses.
+		p.fail(task, fmt.Errorf("every session failed (tried %d); last error: %w", attempts, lastErr))
 		return
 	}
 
