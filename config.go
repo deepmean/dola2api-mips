@@ -72,6 +72,13 @@ type Config struct {
 	// not something this project can pin down from the outside.
 	VideoModels []string
 
+	// ImageAbility is the skill type used for image requests. It is
+	// configurable because the value is evidence-based rather than confirmed
+	// end to end: the upstream's skill table reports 3 as image generation, and
+	// the value the upstream Python used (16) is SkillCodeAssistant, whose
+	// branch had no callers. An operator can correct it without a rebuild.
+	ImageAbility int
+
 	// AccountsFile is the JSON list of upstream sessions. It is read at start
 	// and re-read on SIGHUP, so a session can be added without a restart.
 	AccountsFile string
@@ -308,6 +315,12 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	if cfg.SessionWarnDays < 0 {
 		return Config{}, fmt.Errorf("DOLA_SESSION_WARN_DAYS must be >= 0, got %d", cfg.SessionWarnDays)
+	}
+	if cfg.ImageAbility, err = envInt(getenv, "DOLA_IMAGE_ABILITY", skillImage); err != nil {
+		return Config{}, err
+	}
+	if cfg.ImageAbility < 0 {
+		return Config{}, fmt.Errorf("DOLA_IMAGE_ABILITY must be >= 0, got %d", cfg.ImageAbility)
 	}
 
 	cfg.VideoModels = envList(getenv, "DOLA_VIDEO_MODELS")

@@ -28,6 +28,8 @@ type Upstream struct {
 	tabID string
 	// base is the API origin. Tests point it at a fake server.
 	base string
+	// imageSkill is the ability_type used for image requests.
+	imageSkill int
 	// now is injectable so tests can pin timestamps.
 	now func() time.Time
 }
@@ -42,10 +44,11 @@ const defaultBase = "https://www.dola.com"
 // account that created it.
 func NewUpstream(egress *Egress) *Upstream {
 	return &Upstream{
-		egress: egress,
-		tabID:  newUUID(),
-		base:   defaultBase,
-		now:    time.Now,
+		egress:     egress,
+		tabID:      newUUID(),
+		base:       defaultBase,
+		imageSkill: skillImage,
+		now:        time.Now,
 	}
 }
 
@@ -199,6 +202,12 @@ type creation struct {
 		ImageOri struct {
 			URL string `json:"url"`
 		} `json:"image_ori"`
+		// ImageOriRaw is the unwatermarked original. image_ori looks like the
+		// better field and is the watermarked rendition, which is the same trap
+		// the video path has: prefer the raw one, fall back to the pretty one.
+		ImageOriRaw struct {
+			URL string `json:"url"`
+		} `json:"image_ori_raw"`
 		ImagePreview struct {
 			URL string `json:"url"`
 		} `json:"image_preview"`
@@ -267,9 +276,15 @@ func mediaOf(item creation) (Media, bool) {
 		}
 		return media, media.URL != ""
 	case creationTypeImage:
-		// image_ori is the full-size original; the thumb and preview are
-		// smaller renditions of the same picture.
-		url := item.Image.ImageOri.URL
+		// Prefer the unwatermarked original. image_ori is the watermarked
+		// rendition despite the name; image_ori_raw is the original. The thumb
+		// and preview are smaller renditions of the same picture and are only
+		// a last resort.
+		url := item.Image.ImageOriRaw.URL
+		watermarked := item.Image.ImageOri.URL
+		if url == "" {
+			url = watermarked
+		}
 		if url == "" {
 			url = item.Image.ImagePreview.URL
 		}
@@ -280,9 +295,10 @@ func mediaOf(item creation) (Media, bool) {
 			return Media{}, false
 		}
 		return Media{
-			Kind:  "image",
-			URL:   url,
-			Cover: item.Image.ImageThumb.URL,
+			Kind:           "image",
+			URL:            url,
+			WatermarkedURL: watermarked,
+			Cover:          item.Image.ImageThumb.URL,
 		}, true
 	default:
 		return Media{}, false
@@ -361,7 +377,7 @@ func newUUID() string {
 //
 // It reads the recent-conversation list: a small authenticated call that needs
 // no signature, and the same one the standalone probe uses. This is what makes
-// pasting a cookie into the panel useful rather than a guess — a dead session
+// pasting a cookie into the panel useful rather than a guess 闁?a dead session
 // would otherwise only surface later, as an account parked by the cooldown with
 // an upstream error that looks like a rate limit.
 func (u *Upstream) VerifySession(ctx context.Context, cookie string) error {
@@ -478,19 +494,34 @@ type SubmitRequest struct {
 	Ratio    string
 	Model    string
 	Duration int
-	// Kind is "video" (the default) or "image". It decides how the prompt is
-	// phrased on the wire, which is what actually selects the output.
+	// Kind is "video" (the default) or "image".
 	Kind string
+	// Style is an image style, only meaningful when Kind is "image".
+	Style string
 	// ReferenceImages are optional source images.
 	ReferenceImages [][]byte
 }
+
+// Skill types, as the upstream names them. ability_type carries the skill, and
+// the server derives input_skill.skill_id from it: a poll of a conversation this
+// port created comes back with ext.input_skill = {"skill_id":"17"} even though
+// this port never sends that field.
+const (
+	// skillVideo is the video-generation skill.
+	skillVideo = 17
+	// skillImage is image generation. The upstream Python used 16, which is
+	// SkillCodeAssistant: /samantha/skill/pack answers 710010702 for 16 and 0
+	// for 3, and the skill table reports 3 as "闁革附鐗滄晶鏍偨閻旂鐏?. That Python branch had
+	// no callers, so it was never validated.
+	skillImage = 3
+)
 
 // wirePrompt phrases the prompt the way the web client does.
 //
 // This is the single most important detail of the submit: the agent reads the
 // prompt to decide what to produce. The client sends
 // "Generate video: <prompt>, <ratio>", and a request that says anything else
-// comes back as a batch of images — which is exactly what happened here, and
+// comes back as a batch of images 闁?which is exactly what happened here, and
 // looked for a long time like a broken poll rather than a wrong prompt.
 func wirePrompt(req SubmitRequest) string {
 	if req.Kind == "image" {
@@ -499,14 +530,48 @@ func wirePrompt(req SubmitRequest) string {
 	return fmt.Sprintf("Generate video: %s, %s", req.Prompt, req.Ratio)
 }
 
+// abilityFor builds chat_ability for a request.
+//
+// The parameter keys differ per skill, and the difference is not cosmetic: the
+// video skill takes {model, ratio, duration} and the image skill takes
+// {ratio, style}. Sending the wrong set is accepted and then produces nothing.
+func abilityFor(req SubmitRequest, imageSkill int) (int, string) {
+	param := map[string]any{"ratio": req.Ratio}
+	skill := skillVideo
+	if req.Kind == "image" {
+		skill = imageSkill
+		if req.Style != "" {
+			param["style"] = req.Style
+		}
+	} else {
+		param["model"] = req.Model
+		param["duration"] = req.Duration
+	}
+	if len(req.ReferenceImages) > 0 {
+		// A reference image rides along inside the same parameter object.
+		frames := make([]string, 0, len(req.ReferenceImages))
+		for _, img := range req.ReferenceImages {
+			frames = append(frames, "data:image/jpeg;base64,"+base64.StdEncoding.EncodeToString(img))
+		}
+		param["reference_images"] = frames
+	}
+	encoded, err := json.Marshal(param)
+	if err != nil {
+		// The map holds only strings, ints and slices of strings, so this cannot
+		// fail; an empty parameter is a safer answer than a panic.
+		return skill, "{}"
+	}
+	return skill, string(encoded)
+}
+
 // Submit posts a request and returns the conversation id.
 //
 // The response is an SSE stream: the conversation id arrives in the SSE_ACK
 // event, and a refusal arrives in STREAM_ERROR. Only the first acknowledgement
 // is needed, so the stream is read just far enough and then closed rather than
-// drained 鈥?the generation continues upstream and is picked up by Poll.
+// drained 闂?the generation continues upstream and is picked up by Poll.
 func (u *Upstream) Submit(ctx context.Context, cookie string, req SubmitRequest) (string, error) {
-	body, err := buildSubmitBody(req, u.now())
+	body, err := buildSubmitBody(req, u.imageSkill, u.now())
 	if err != nil {
 		return "", err
 	}
@@ -543,7 +608,7 @@ const maxSubmitBody = 256 << 10
 //
 // It deliberately carries no a_bogus. Measured on the live endpoint: a submit
 // with no a_bogus at all is accepted and acknowledged, while one carrying a
-// well-formed but meaningless a_bogus is refused with 710022002 — the same code
+// well-formed but meaningless a_bogus is refused with 710022002 闁?the same code
 // a genuinely invalid signature gets. So the parameter is only validated when it
 // is present, and sending a placeholder is worse than sending nothing.
 //
@@ -565,23 +630,11 @@ func (u *Upstream) submitURL() string {
 }
 
 // buildSubmitBody renders the request the page sends for a video generation.
-func buildSubmitBody(req SubmitRequest, now time.Time) ([]byte, error) {
+func buildSubmitBody(req SubmitRequest, imageSkill int, now time.Time) ([]byte, error) {
 	if req.Prompt == "" {
 		return nil, errors.New("submit: empty prompt")
 	}
-	ability := map[string]any{"ratio": req.Ratio, "model": req.Model, "duration": req.Duration}
-	if len(req.ReferenceImages) > 0 {
-		// Image-to-video carries the frames as data URLs inside the same param.
-		frames := make([]string, 0, len(req.ReferenceImages))
-		for _, img := range req.ReferenceImages {
-			frames = append(frames, "data:image/jpeg;base64,"+base64.StdEncoding.EncodeToString(img))
-		}
-		ability["reference_images"] = frames
-	}
-	abilityParam, err := json.Marshal(ability)
-	if err != nil {
-		return nil, fmt.Errorf("submit: ability param: %w", err)
-	}
+	abilityType, abilityParam := abilityFor(req, imageSkill)
 
 	nowMs := now.UnixMilli()
 	payload := map[string]any{
@@ -626,7 +679,7 @@ func buildSubmitBody(req SubmitRequest, now time.Time) ([]byte, error) {
 			"message_storage_type": 0,
 		},
 		"chat_ability": map[string]any{
-			"ability_type": 17, "ability_param": string(abilityParam),
+			"ability_type": abilityType, "ability_param": abilityParam,
 		},
 		"user_context": []any{},
 		"ext": map[string]any{

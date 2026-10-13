@@ -334,7 +334,7 @@ func TestSubmitSendsNoSignatureParameter(t *testing.T) {
 func TestBuildSubmitBodyShape(t *testing.T) {
 	body, err := buildSubmitBody(SubmitRequest{
 		Prompt: "a cat", Ratio: "9:16", Model: "seedance_v2.0", Duration: 10,
-	}, time.Unix(1700000000, 0))
+	}, skillImage, time.Unix(1700000000, 0))
 	if err != nil {
 		t.Fatalf("buildSubmitBody: %v", err)
 	}
@@ -395,8 +395,9 @@ func TestExtractPollFindsImages(t *testing.T) {
 	  {"content":[{"block_type":2074,"content":{"creation_block":{"creations":[
 	    {"type":1,"image":{"image_thumb":{"url":"https://cdn/thumb.jpg"},
 	                       "image_preview":{"url":"https://cdn/preview.jpg"},
-	                       "image_ori":{"url":"https://cdn/original.jpg"}}},
-	    {"type":1,"image":{"image_thumb":{"url":"https://cdn/only-thumb.jpg"}}},
+	                       "image_ori":{"url":"https://cdn/watermarked.jpg"},
+	                       "image_ori_raw":{"url":"https://cdn/original.jpg"}}},
+	    {"type":1,"image":{"image_ori":{"url":"https://cdn/only-watermarked.jpg"}}},
 	    {"type":1,"image":{}},
 	    {"type":2,"video":{"download_url":"https://cdn/v.mp4"}}
 	  ]}}}]}
@@ -409,12 +410,17 @@ func TestExtractPollFindsImages(t *testing.T) {
 	if len(result.Media) != 3 {
 		t.Fatalf("media = %d, want 3 (two images and one video)", len(result.Media))
 	}
+	// image_ori_raw is the unwatermarked original; image_ori is the watermarked
+	// rendition despite the name.
 	if result.Media[0].Kind != "image" || result.Media[0].URL != "https://cdn/original.jpg" {
-		t.Errorf("first item = %+v, want the full-size original", result.Media[0])
+		t.Errorf("first item = %+v, want the unwatermarked original", result.Media[0])
 	}
-	// A creation with only a thumb still yields something usable.
-	if result.Media[1].URL != "https://cdn/only-thumb.jpg" {
-		t.Errorf("second item = %+v, want the thumb as a fallback", result.Media[1])
+	if result.Media[0].WatermarkedURL != "https://cdn/watermarked.jpg" {
+		t.Errorf("the watermarked link was not kept: %+v", result.Media[0])
+	}
+	// Without a raw field the watermarked link is still a usable answer.
+	if result.Media[1].URL != "https://cdn/only-watermarked.jpg" {
+		t.Errorf("second item = %+v, want the watermarked fallback", result.Media[1])
 	}
 	// A creation with no image payload at all is dropped rather than reported
 	// as an empty result.
@@ -424,8 +430,68 @@ func TestExtractPollFindsImages(t *testing.T) {
 }
 
 func TestBuildSubmitBodyRejectsAnEmptyPrompt(t *testing.T) {
-	if _, err := buildSubmitBody(SubmitRequest{}, time.Now()); err == nil {
+	if _, err := buildSubmitBody(SubmitRequest{}, skillImage, time.Now()); err == nil {
 		t.Error("an empty prompt was accepted")
+	}
+}
+
+func TestAbilityForSendsTheRightKeysPerSkill(t *testing.T) {
+	// The video skill takes {model, ratio, duration}; the image skill takes
+	// {ratio, style}. Sending the wrong set is accepted and then produces
+	// nothing, which is the failure mode that is hardest to see.
+	videoType, videoParam := abilityFor(SubmitRequest{
+		Prompt: "a cat", Ratio: "9:16", Model: "seedance_v2.0", Duration: 10,
+	}, skillImage)
+	if videoType != skillVideo {
+		t.Errorf("video ability_type = %d, want %d", videoType, skillVideo)
+	}
+	var video map[string]any
+	if err := json.Unmarshal([]byte(videoParam), &video); err != nil {
+		t.Fatalf("video param is not JSON: %v", err)
+	}
+	if video["model"] != "seedance_v2.0" || video["duration"] != float64(10) || video["ratio"] != "9:16" {
+		t.Errorf("video param = %v", video)
+	}
+	if _, hasStyle := video["style"]; hasStyle {
+		t.Errorf("the video param carries an image-only key: %v", video)
+	}
+
+	imageType, imageParam := abilityFor(SubmitRequest{
+		Prompt: "a cat", Ratio: "1:1", Style: "anime", Model: "seedance_v2.0", Duration: 10,
+		Kind: "image",
+	}, skillImage)
+	if imageType != skillImage {
+		t.Errorf("image ability_type = %d, want %d", imageType, skillImage)
+	}
+	var image map[string]any
+	if err := json.Unmarshal([]byte(imageParam), &image); err != nil {
+		t.Fatalf("image param is not JSON: %v", err)
+	}
+	if image["ratio"] != "1:1" || image["style"] != "anime" {
+		t.Errorf("image param = %v", image)
+	}
+	for _, unwanted := range []string{"model", "duration"} {
+		if _, has := image[unwanted]; has {
+			t.Errorf("the image param carries a video-only key %q: %v", unwanted, image)
+		}
+	}
+}
+
+func TestAbilityForCarriesReferenceImages(t *testing.T) {
+	_, param := abilityFor(SubmitRequest{
+		Prompt: "a cat", Ratio: "9:16", Kind: "video",
+		ReferenceImages: [][]byte{{1, 2, 3}},
+	}, skillImage)
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(param), &parsed); err != nil {
+		t.Fatalf("param is not JSON: %v", err)
+	}
+	frames, ok := parsed["reference_images"].([]any)
+	if !ok || len(frames) != 1 {
+		t.Fatalf("reference_images = %v", parsed["reference_images"])
+	}
+	if !strings.HasPrefix(frames[0].(string), "data:image/jpeg;base64,") {
+		t.Errorf("frame = %q, want a data URL", frames[0])
 	}
 }
 

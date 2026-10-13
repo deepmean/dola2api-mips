@@ -155,6 +155,7 @@ func main() {
 	srv.reloadError = accounts.LastError
 
 	upstream := NewUpstream(egress)
+	upstream.imageSkill = cfg.ImageAbility
 	exec, err := NewExecutor(cfg, upstream)
 	if err != nil {
 		log.Fatalf("executor: %v", err)

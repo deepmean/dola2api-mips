@@ -24,13 +24,25 @@ Dola Render Gateway 的 MIPS32 移植版：把 `coll3879xx-cyber/dola-render-gat
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/v1/videos` | `{prompt,ratio?,model?,duration?}` → `202 {id,state,videos[]}` |
+| POST | `/v1/videos` | `{prompt,ratio?,model?,duration?}` → `202 {id,state,media[]}` |
+| POST | `/v1/images` | 同上；`{prompt,ratio?,style?}`，产出图片而非视频 |
+| POST | `/v1/chat/completions` | OpenAI 形状的适配器：把对话映射成一次生成，返回任务信息 |
+| GET | `/v1/models` | 本服务支持的模型（`DOLA_VIDEO_MODELS` 可改） |
 | GET | `/v1/videos/{id}` | 任务状态；`state ∈ pending/running/succeeded/failed` |
-| GET | `/v1/videos/{id}/content` | 按 `DOLA_STORE_MODE` 交付视频（默认 302 到 CDN） |
-| GET | `/admin/status` | 出口、内存、账号、队列深度、上次重载错误 |
+| GET | `/v1/videos/{id}/content` | 按 `DOLA_STORE_MODE` 交付（默认 302 到 CDN） |
+| GET | `/admin` | 面板（页面壳免鉴权，密钥由浏览器本地保存） |
+| GET | `/admin/status` | 出口、内存、账号（含到期倒计时）、队列深度 |
 | GET | `/admin/tasks?limit=N` | 最近任务（1–500，默认 50） |
 | POST | `/admin/reload` | 重新读取 `accounts.json`（等价于 SIGHUP） |
+| POST | `/admin/accounts` | **先向上游验证**再保存一个 cookie |
+| DELETE | `/admin/accounts/{label}` | 删除一个账号 |
 | GET | `/health` | 账号池、出口状态、内存读数、热重载错误 |
+
+**视频与图片的差别只在提示词的措辞**（视频走 `Generate video: <prompt>, <ratio>`，图片走裸提示词）与
+技能类型（`DOLA_IMAGE_ABILITY`，默认 3）。同一次上游调用、同一条轮询、同一套取回。
+
+**未匹配的路径**会返回结构化 404 并**把请求的路径写进日志**——客户端对接时的路径不匹配曾是一条
+没有线索的 `404 page not found`。
 
 鉴权**失败关闭**：未配置 key 时 `/v1/*` 返回 `503` 而不是对所有人开放；
 key 用常量时间比较，错的 key 与缺失的 key 不可区分。普通 API key **不能**访问 `/admin/*`
