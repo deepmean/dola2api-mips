@@ -146,8 +146,8 @@ func TestPoolRunsTaskToCompletion(t *testing.T) {
 	if done.ConversationID != "conv-1" {
 		t.Errorf("conversation id = %q", done.ConversationID)
 	}
-	if len(done.Videos) != 1 || done.Videos[0].UnwatermarkedURL == "" {
-		t.Errorf("videos = %+v", done.Videos)
+	if len(done.Media) != 1 || done.Media[0].URL == "" {
+		t.Errorf("media = %+v", done.Media)
 	}
 	if exec.callCount() != 1 {
 		t.Errorf("executor called %d time(s), want 1", exec.callCount())
@@ -296,9 +296,9 @@ func TestPoolGetReturnsASnapshot(t *testing.T) {
 	snapshot := waitForState(t, pool, task.ID, TaskSucceeded)
 
 	// Mutating the snapshot must not reach the pool's copy.
-	snapshot.Videos[0].DownloadURL = "tampered"
+	snapshot.Media[0].URL = "tampered"
 	again, _ := pool.Get(task.ID)
-	if again.Videos[0].DownloadURL == "tampered" {
+	if again.Media[0].URL == "tampered" {
 		t.Error("Get returned a live reference instead of a snapshot")
 	}
 

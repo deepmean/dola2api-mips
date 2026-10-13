@@ -20,14 +20,14 @@ const (
 	TaskFailed    TaskState = "failed"
 )
 
-// Task is one video request and its outcome.
+// Task is one generation request and its outcome.
 type Task struct {
 	ID      string
 	Request SubmitRequest
 
 	State          TaskState
 	ConversationID string
-	Videos         []Video
+	Media          []Media
 	Error          string
 
 	CreatedAt  time.Time
@@ -46,11 +46,11 @@ var ErrPoolFull = errors.New("pool: too many pending tasks")
 // ErrPoolClosed means the pool is shutting down.
 var ErrPoolClosed = errors.New("pool: closed")
 
-// Pool turns requests into videos, one upstream submission at a time.
+// Pool turns requests into generated media, one upstream submission at a time.
 //
 // The concurrency bound is deliberate rather than incidental: the target router
 // has 250MB of RAM and the upstream rate-limits anyway, so a second worker buys
-// nothing and costs memory. The pending bound exists for the same reason — a
+// nothing and costs memory. The pending bound exists for the same reason 閳?a
 // queue that grows without limit is a way to run out of memory from the outside.
 type Pool struct {
 	cfg      Config
@@ -167,7 +167,7 @@ func (p *Pool) Get(id string) (Task, bool) {
 		return Task{}, false
 	}
 	snapshot := *task
-	snapshot.Videos = append([]Video(nil), task.Videos...)
+	snapshot.Media = append([]Media(nil), task.Media...)
 	return snapshot, true
 }
 
@@ -189,7 +189,7 @@ func (p *Pool) List(limit int) []Task {
 	out := make([]Task, 0, len(p.tasks))
 	for _, task := range p.tasks {
 		snapshot := *task
-		snapshot.Videos = append([]Video(nil), task.Videos...)
+		snapshot.Media = append([]Media(nil), task.Media...)
 		out = append(out, snapshot)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].seq > out[j].seq })
@@ -280,7 +280,7 @@ func (p *Pool) run(ctx context.Context, task *Task) {
 		}
 
 		// The submit and the polling each get their own deadline: a submit that
-		// hangs must not eat the time budget for waiting on the video.
+		// hangs must not eat the time budget for waiting on the result.
 		submitCtx, cancelSubmit := context.WithTimeout(ctx, p.cfg.SubmitDeadline)
 		conversationID, err = p.exec.Submit(submitCtx, candidate.Cookie, task.Request)
 		cancelSubmit()
@@ -303,7 +303,7 @@ func (p *Pool) run(ctx context.Context, task *Task) {
 	task.ConversationID = conversationID
 	p.mu.Unlock()
 
-	videos, err := p.awaitVideo(ctx, account.Cookie, conversationID)
+	media, err := p.awaitMedia(ctx, account.Cookie, conversationID)
 	if err != nil {
 		p.accounts.RecordFailure(account, time.Now(), err)
 		p.fail(task, err)
@@ -312,15 +312,15 @@ func (p *Pool) run(ctx context.Context, task *Task) {
 
 	p.accounts.RecordSuccess(account, time.Now())
 	p.mu.Lock()
-	task.Videos = videos
+	task.Media = media
 	task.State = TaskSucceeded
 	task.FinishedAt = time.Now()
 	p.mu.Unlock()
-	p.logger.Printf("task %s: %d video(s) from conversation %s", task.ID, len(videos), conversationID)
+	p.logger.Printf("task %s: %d item(s) from conversation %s", task.ID, len(media), conversationID)
 }
 
-// awaitVideo polls until the conversation carries a video or the budget runs out.
-func (p *Pool) awaitVideo(ctx context.Context, cookie, conversationID string) ([]Video, error) {
+// awaitMedia polls until the conversation carries a result or the budget runs out.
+func (p *Pool) awaitMedia(ctx context.Context, cookie, conversationID string) ([]Media, error) {
 	deadline := time.Now().Add(p.cfg.VideoTimeout)
 	ticker := time.NewTicker(p.cfg.PollInterval)
 	defer ticker.Stop()
@@ -334,15 +334,15 @@ func (p *Pool) awaitVideo(ctx context.Context, cookie, conversationID string) ([
 		switch {
 		case err != nil:
 			lastErr = err
-		case len(result.Videos) > 0:
-			return result.Videos, nil
+		case len(result.Media) > 0:
+			return result.Media, nil
 		}
 
 		if time.Now().After(deadline) {
 			if lastErr != nil {
-				return nil, fmt.Errorf("timed out waiting for the video (last poll error: %w)", lastErr)
+				return nil, fmt.Errorf("timed out waiting for the result (last poll error: %w)", lastErr)
 			}
-			return nil, errors.New("timed out waiting for the video")
+			return nil, errors.New("timed out waiting for the result")
 		}
 		select {
 		case <-ctx.Done():

@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-// Retriever delivers a generated video to a client.
+// Retriever delivers generated media to a client.
 //
 // Three modes, and the default is the cheapest one on purpose:
 //
@@ -57,18 +57,17 @@ func (r *Retriever) Mode() string { return r.cfg.StoreMode }
 
 // bestURL prefers the unwatermarked original, which is what the upstream
 // produces and what the watermarked download_url is derived from.
-func bestURL(video Video) string {
-	if video.UnwatermarkedURL != "" {
-		return video.UnwatermarkedURL
-	}
-	return video.DownloadURL
+func bestURL(media Media) string {
+	// Media.URL is already the best link available: the unwatermarked original for
+	// a video, the full-size original for an image.
+	return media.URL
 }
 
-// Deliver sends one video to the client.
-func (r *Retriever) Deliver(ctx context.Context, w http.ResponseWriter, video Video) error {
-	target := bestURL(video)
+// Deliver sends one item to the client.
+func (r *Retriever) Deliver(ctx context.Context, w http.ResponseWriter, media Media) error {
+	target := bestURL(media)
 	if target == "" {
-		return errors.New("store: the video has no URL")
+		return errors.New("store: the result has no URL")
 	}
 
 	switch r.cfg.StoreMode {
@@ -87,7 +86,7 @@ func (r *Retriever) Deliver(ctx context.Context, w http.ResponseWriter, video Vi
 	}
 }
 
-// pipe streams the video through the router with a bounded copy.
+// pipe streams the item through the router with a bounded copy.
 func (r *Retriever) pipe(ctx context.Context, w http.ResponseWriter, target string) error {
 	resp, err := r.fetch(ctx, target)
 	if err != nil {
@@ -95,7 +94,7 @@ func (r *Retriever) pipe(ctx context.Context, w http.ResponseWriter, target stri
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("store: upstream returned %d for the video", resp.StatusCode)
+		return fmt.Errorf("store: upstream returned %d for the media", resp.StatusCode)
 	}
 
 	w.Header().Set("Content-Type", contentTypeOf(resp))
@@ -156,7 +155,7 @@ func (r *Retriever) ensureMirror(ctx context.Context, target string) (string, er
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("store: upstream returned %d for the video", resp.StatusCode)
+		return "", fmt.Errorf("store: upstream returned %d for the media", resp.StatusCode)
 	}
 
 	// Write to a temporary name and rename, so a client never reads a partial
@@ -172,7 +171,7 @@ func (r *Retriever) ensureMirror(ctx context.Context, target string) (string, er
 	if limit > 0 {
 		written, err = io.Copy(temp, io.LimitReader(resp.Body, limit+1))
 		if err == nil && written > limit {
-			err = fmt.Errorf("store: video exceeds DOLA_MIRROR_MAX_BYTES (%d)", limit)
+			err = fmt.Errorf("store: media exceeds DOLA_MIRROR_MAX_BYTES (%d)", limit)
 		}
 	} else {
 		written, err = io.Copy(temp, resp.Body)
@@ -242,16 +241,18 @@ func mirrorKey(target string) string {
 
 // contentTypeOf prefers the upstream's type but never trusts it blindly.
 func contentTypeOf(resp *http.Response) string {
-	if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "video/") {
+	if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "video/") || strings.HasPrefix(ct, "image/") {
 		return ct
 	}
+	// The CDNs serve videos as mp4 and images as jpeg; this is the fallback for
+	// a response that does not say.
 	return "video/mp4"
 }
 
-// ValidVideoURL reports whether a URL is worth handing to a client. The
+// ValidMediaURL reports whether a URL is worth handing to a client. The
 // generated URLs are https, and a scheme check keeps a malformed response from
 // turning into an open redirect.
-func ValidVideoURL(raw string) bool {
+func ValidMediaURL(raw string) bool {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return false

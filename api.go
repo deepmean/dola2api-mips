@@ -12,17 +12,24 @@ import (
 	"time"
 )
 
-// apiRequest is the body of POST /v1/videos.
+// apiRequest is the body of POST /v1/videos and POST /v1/images.
 type apiRequest struct {
-	Prompt   string `json:"prompt"`
-	Ratio    string `json:"ratio"`
-	Model    string `json:"model"`
+	Prompt string `json:"prompt"`
+	Ratio  string `json:"ratio"`
+	Model  string `json:"model"`
+	// Kind overrides the endpoint's default: "video" or "image".
+	Kind     string `json:"kind,omitempty"`
 	Duration int    `json:"duration"`
 }
 
-// apiVideo is one delivered video in a task response.
-type apiVideo struct {
-	// URL is the direct CDN link, always present.
+// apiMedia is one delivered item in a task response.
+type apiMedia struct {
+	// Kind is "video" or "image". A submit can produce either, and which one it
+	// is depends on how the prompt was phrased, so the caller is told rather
+	// than left to guess from the URL.
+	Kind string `json:"kind"`
+	// URL is the direct CDN link: the unwatermarked original for a video, the
+	// full-size original for an image.
 	URL string `json:"url"`
 	// ContentURL is this service's own retrieval endpoint, which follows
 	// DOLA_STORE_MODE.
@@ -36,7 +43,7 @@ type apiTask struct {
 	ID             string     `json:"id"`
 	State          TaskState  `json:"state"`
 	ConversationID string     `json:"conversation_id,omitempty"`
-	Videos         []apiVideo `json:"videos"`
+	Media          []apiMedia `json:"media"`
 	Error          string     `json:"error,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
 	FinishedAt     *time.Time `json:"finished_at,omitempty"`
@@ -141,12 +148,13 @@ func newAPI(cfg Config, guard *Guard, pool *Pool, retriever *Retriever,
 // register adds the API routes to mux.
 func (a *api) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/models", a.withAuth(a.handleModels))
-	mux.HandleFunc("POST /v1/videos", a.withAuth(a.handleCreate))
+	mux.HandleFunc("POST /v1/videos", a.withAuth(a.handleCreateVideo))
+	mux.HandleFunc("POST /v1/images", a.withAuth(a.handleCreateImage))
 	mux.HandleFunc("GET /v1/videos/{id}", a.withAuth(a.handleGet))
 	mux.HandleFunc("GET /v1/videos/{id}/content", a.withAuth(a.handleContent))
 	// The path the first draft of the README documented. Kept as an alias so a
 	// client written against it does not start 404ing.
-	mux.HandleFunc("POST /v1/videos/generations", a.withAuth(a.handleCreate))
+	mux.HandleFunc("POST /v1/videos/generations", a.withAuth(a.handleCreateVideo))
 	a.registerChat(mux)
 	a.registerAdmin(mux)
 	mux.HandleFunc("/", a.handleNotFound)
@@ -187,8 +195,22 @@ func (a *api) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// handleCreateVideo submits a video request.
+func (a *api) handleCreateVideo(w http.ResponseWriter, r *http.Request) {
+	a.handleCreate(w, r, "video")
+}
+
+// handleCreateImage submits an image request.
+//
+// Same upstream call, different phrasing of the prompt, which is what actually
+// selects the output. The two are separate endpoints because a caller should not
+// have to know that.
+func (a *api) handleCreateImage(w http.ResponseWriter, r *http.Request) {
+	a.handleCreate(w, r, "image")
+}
+
 // handleCreate submits a request and returns the task to poll.
-func (a *api) handleCreate(w http.ResponseWriter, r *http.Request) {
+func (a *api) handleCreate(w http.ResponseWriter, r *http.Request, defaultKind string) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxAPIRequestBytes))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "could not read the request body", "bad_body")
@@ -199,7 +221,7 @@ func (a *api) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error(), "bad_json")
 		return
 	}
-	submit, err := a.validate(req)
+	submit, err := a.validate(req, defaultKind)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request")
 		return
@@ -240,12 +262,12 @@ func (a *api) handleContent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no such task", "not_found")
 		return
 	}
-	if task.State != TaskSucceeded || len(task.Videos) == 0 {
+	if task.State != TaskSucceeded || len(task.Media) == 0 {
 		writeError(w, http.StatusConflict,
-			"the task has no video yet (state: "+string(task.State)+")", "not_ready")
+			"the task has no result yet (state: "+string(task.State)+")", "not_ready")
 		return
 	}
-	if err := a.retriever.Deliver(r.Context(), w, task.Videos[0]); err != nil {
+	if err := a.retriever.Deliver(r.Context(), w, task.Media[0]); err != nil {
 		writeError(w, http.StatusBadGateway, err.Error(), "delivery_failed")
 		return
 	}
@@ -255,13 +277,21 @@ func (a *api) handleContent(w http.ResponseWriter, r *http.Request) {
 }
 
 // validate turns a request into a SubmitRequest, filling in defaults.
-func (a *api) validate(req apiRequest) (SubmitRequest, error) {
+func (a *api) validate(req apiRequest, defaultKind string) (SubmitRequest, error) {
 	prompt := strings.TrimSpace(req.Prompt)
 	if prompt == "" {
 		return SubmitRequest{}, errors.New("prompt is required")
 	}
 	if len(prompt) > 4000 {
 		return SubmitRequest{}, errors.New("prompt is too long (4000 characters maximum)")
+	}
+
+	kind := strings.TrimSpace(req.Kind)
+	if kind == "" {
+		kind = defaultKind
+	}
+	if kind != "video" && kind != "image" {
+		return SubmitRequest{}, errors.New(`kind must be "video" or "image"`)
 	}
 
 	ratio := strings.TrimSpace(req.Ratio)
@@ -291,7 +321,7 @@ func (a *api) validate(req apiRequest) (SubmitRequest, error) {
 		return SubmitRequest{}, errors.New("duration must be between 1 and 60 seconds")
 	}
 
-	return SubmitRequest{Prompt: prompt, Ratio: ratio, Model: model, Duration: duration}, nil
+	return SubmitRequest{Prompt: prompt, Ratio: ratio, Model: model, Kind: kind, Duration: duration}, nil
 }
 
 // validRatio accepts the aspect ratios the upstream offers.
@@ -322,18 +352,19 @@ func (a *api) toAPITask(task Task) apiTask {
 		ConversationID: task.ConversationID,
 		Error:          task.Error,
 		CreatedAt:      task.CreatedAt,
-		Videos:         []apiVideo{},
+		Media:          []apiMedia{},
 	}
 	if !task.FinishedAt.IsZero() {
 		finished := task.FinishedAt
 		out.FinishedAt = &finished
 	}
-	for _, video := range task.Videos {
-		out.Videos = append(out.Videos, apiVideo{
-			URL:        bestURL(video),
+	for _, media := range task.Media {
+		out.Media = append(out.Media, apiMedia{
+			Kind:       media.Kind,
+			URL:        bestURL(media),
 			ContentURL: "/v1/videos/" + task.ID + "/content",
-			Cover:      video.Cover,
-			Model:      video.Model,
+			Cover:      media.Cover,
+			Model:      media.Model,
 		})
 	}
 	return out

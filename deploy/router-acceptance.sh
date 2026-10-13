@@ -67,21 +67,35 @@ echo
 TASK_ID=$(sed -n 's/.*"id":"\([^"]*\)".*/\1/p' /tmp/r.json)
 if [ -n "$TASK_ID" ]; then
 	echo
-	echo "=== 8. poll the task until it settles ==="
+	echo "=== 8. poll the task until it settles (up to 5 minutes) ==="
 	i=0
-	while [ $i -lt 12 ]; do
-		curl -s -m 10 -o /tmp/t.json "$BASE/v1/videos/$TASK_ID" -H "Authorization: Bearer $API_KEY"
+	while [ $i -lt 30 ]; do
+		curl -s -m 15 -o /tmp/t.json "$BASE/v1/videos/$TASK_ID" -H "Authorization: Bearer $API_KEY"
 		state=$(sed -n 's/.*"state":"\([^"]*\)".*/\1/p' /tmp/t.json)
-		echo "  poll $i: state=$state"
+		videos=$(grep -o '"url":"[^"]*"' /tmp/t.json | wc -l)
+		echo "  +$((i * 10))s  state=$state  videos=$videos"
 		if [ "$state" = "succeeded" ] || [ "$state" = "failed" ]; then
 			break
 		fi
 		i=$((i + 1))
-		sleep 5
+		sleep 10
 	done
 	echo "  final:"
-	head -c 400 /tmp/t.json
+	head -c 600 /tmp/t.json
 	echo
+	if [ "$state" = "succeeded" ]; then
+		echo
+		echo "=== 8b. fetch the video through the service (follows DOLA_STORE_MODE) ==="
+		curl -s -m 30 -o /dev/null -w '  /v1/videos/{id}/content -> http %{http_code}, %{size_download} bytes, type %{content_type}\n' \
+			"$BASE/v1/videos/$TASK_ID/content" -H "Authorization: Bearer $API_KEY"
+		echo -n "  and the URL itself answers: "
+		VIDEO_URL=$(sed -n 's/.*"url":"\([^"]*\)".*/\1/p' /tmp/t.json | head -1)
+		if [ -n "$VIDEO_URL" ]; then
+			curl -s -m 30 -o /dev/null -w 'http %{http_code}, %{size_download} bytes\n' "$VIDEO_URL"
+		else
+			echo "no url in the response"
+		fi
+	fi
 fi
 
 echo

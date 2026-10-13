@@ -49,15 +49,18 @@ func NewUpstream(egress *Egress) *Upstream {
 	}
 }
 
-// Video is one generated video found in a poll response.
-type Video struct {
-	// DownloadURL is the watermarked CDN link.
-	DownloadURL string
-	// UnwatermarkedURL is the original, base64-encoded inside video_model.
-	UnwatermarkedURL string
-	// Cover is the poster frame, when the response carries one.
+// Media is one generated item found in a poll response: a video or an image.
+type Media struct {
+	// Kind is "video" or "image".
+	Kind string
+	// URL is the best available link: the unwatermarked original for a video,
+	// the full-size original for an image.
+	URL string
+	// WatermarkedURL is the CDN link the web client shows, when present.
+	WatermarkedURL string
+	// Cover is a poster or thumbnail, when the response carries one.
 	Cover string
-	// Model is the model name reported for the video.
+	// Model is the model name reported for the item.
 	Model string
 }
 
@@ -66,7 +69,7 @@ type PollResult struct {
 	ConversationID string
 	Messages       int
 	Texts          []string
-	Videos         []Video
+	Media          []Media
 	// Finished reports whether the response looked complete rather than partial.
 	Finished bool
 }
@@ -174,25 +177,46 @@ type contentBlock struct {
 			Text string `json:"text"`
 		} `json:"text_block"`
 		CreationBlock struct {
-			Creations []struct {
-				Type  int `json:"type"`
-				Video struct {
-					DownloadURL string `json:"download_url"`
-					Cover       string `json:"cover_url"`
-					VideoModel  string `json:"video_model"`
-				} `json:"video"`
-			} `json:"creations"`
+			Creations []creation `json:"creations"`
 		} `json:"creation_block"`
 	} `json:"content"`
 }
 
-// blockTypeCreation is the block type that carries generated media.
-const blockTypeCreation = 2074
+// creation is one generated item inside a creation block.
+type creation struct {
+	// Type is 1 for an image and 2 for a video, which is what the poll response
+	// uses to say what came back.
+	Type  int `json:"type"`
+	Video struct {
+		DownloadURL string `json:"download_url"`
+		Cover       string `json:"cover_url"`
+		VideoModel  string `json:"video_model"`
+	} `json:"video"`
+	Image struct {
+		ImageThumb struct {
+			URL string `json:"url"`
+		} `json:"image_thumb"`
+		ImageOri struct {
+			URL string `json:"url"`
+		} `json:"image_ori"`
+		ImagePreview struct {
+			URL string `json:"url"`
+		} `json:"image_preview"`
+	} `json:"image"`
+}
 
-// creationTypeVideo marks a video creation inside a creation block.
-const creationTypeVideo = 2
+const (
+	// blockTypeCreation is the block type that carries generated media.
+	blockTypeCreation = 2074
+	// creationTypeImage and creationTypeVideo are the two values observed in a
+	// creation block. Both come back from the same submit: a prompt that asks
+	// for a video yields type 2, and one that does not yields a batch of type 1
+	// images, so the poll has to look for both rather than assume.
+	creationTypeImage = 1
+	creationTypeVideo = 2
+)
 
-// extractPoll pulls the text and videos out of a poll response.
+// extractPoll pulls the text and the generated media out of a poll response.
 func extractPoll(conversationID string, raw []byte) (PollResult, error) {
 	var parsed pollResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
@@ -214,24 +238,55 @@ func extractPoll(conversationID string, raw []byte) (PollResult, error) {
 			if block.BlockType != blockTypeCreation {
 				continue
 			}
-			for _, creation := range block.Content.CreationBlock.Creations {
-				if creation.Type != creationTypeVideo {
-					continue
-				}
-				video := Video{
-					DownloadURL: creation.Video.DownloadURL,
-					Cover:       creation.Video.Cover,
-				}
-				if model := creation.Video.VideoModel; model != "" {
-					video.Model, video.UnwatermarkedURL = decodeVideoModel(model)
-				}
-				if video.DownloadURL != "" || video.UnwatermarkedURL != "" {
-					result.Videos = append(result.Videos, video)
+			for _, item := range block.Content.CreationBlock.Creations {
+				if media, ok := mediaOf(item); ok {
+					result.Media = append(result.Media, media)
 				}
 			}
 		}
 	}
 	return result, nil
+}
+
+// mediaOf turns one creation into a Media, or reports that it carries nothing.
+func mediaOf(item creation) (Media, bool) {
+	switch item.Type {
+	case creationTypeVideo:
+		media := Media{
+			Kind:           "video",
+			WatermarkedURL: item.Video.DownloadURL,
+			Cover:          item.Video.Cover,
+		}
+		if model := item.Video.VideoModel; model != "" {
+			media.Model, media.URL = decodeVideoModel(model)
+		}
+		if media.URL == "" {
+			// The unwatermarked original is preferred but not guaranteed; the
+			// watermarked link is still a usable answer.
+			media.URL = media.WatermarkedURL
+		}
+		return media, media.URL != ""
+	case creationTypeImage:
+		// image_ori is the full-size original; the thumb and preview are
+		// smaller renditions of the same picture.
+		url := item.Image.ImageOri.URL
+		if url == "" {
+			url = item.Image.ImagePreview.URL
+		}
+		if url == "" {
+			url = item.Image.ImageThumb.URL
+		}
+		if url == "" {
+			return Media{}, false
+		}
+		return Media{
+			Kind:  "image",
+			URL:   url,
+			Cover: item.Image.ImageThumb.URL,
+		}, true
+	default:
+		return Media{}, false
+	}
 }
 
 // decodeContent handles a message content that is either a JSON array or a JSON
@@ -417,7 +472,34 @@ func buildRecentConvBody() ([]byte, error) {
 	return json.Marshal(payload)
 }
 
-// Submit posts a video request and returns the conversation id.
+// SubmitRequest is one request, already validated by the API layer.
+type SubmitRequest struct {
+	Prompt   string
+	Ratio    string
+	Model    string
+	Duration int
+	// Kind is "video" (the default) or "image". It decides how the prompt is
+	// phrased on the wire, which is what actually selects the output.
+	Kind string
+	// ReferenceImages are optional source images.
+	ReferenceImages [][]byte
+}
+
+// wirePrompt phrases the prompt the way the web client does.
+//
+// This is the single most important detail of the submit: the agent reads the
+// prompt to decide what to produce. The client sends
+// "Generate video: <prompt>, <ratio>", and a request that says anything else
+// comes back as a batch of images — which is exactly what happened here, and
+// looked for a long time like a broken poll rather than a wrong prompt.
+func wirePrompt(req SubmitRequest) string {
+	if req.Kind == "image" {
+		return req.Prompt
+	}
+	return fmt.Sprintf("Generate video: %s, %s", req.Prompt, req.Ratio)
+}
+
+// Submit posts a request and returns the conversation id.
 //
 // The response is an SSE stream: the conversation id arrives in the SSE_ACK
 // event, and a refusal arrives in STREAM_ERROR. Only the first acknowledgement
@@ -516,7 +598,8 @@ func buildSubmitBody(req SubmitRequest, now time.Time) ([]byte, error) {
 				"block_type": 10000,
 				"content": map[string]any{
 					"text_block": map[string]any{
-						"text": req.Prompt, "icon_url": "", "icon_url_dark": "", "summary": "",
+						// The phrasing is what selects the output; see wirePrompt.
+						"text": wirePrompt(req), "icon_url": "", "icon_url_dark": "", "summary": "",
 					},
 					"pc_event_block": "",
 				},

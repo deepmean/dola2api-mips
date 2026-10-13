@@ -1,0 +1,17 @@
+{
+  "conversation_id": "",
+  "events": [
+    {
+      "event": "SSE_HEARTBEAT",
+      "data": "{}"
+    },
+    {
+      "event": "STREAM_ERROR",
+      "data": "{\"error_code\":710022004,\"error_msg\":\"rate limited\",\"extra\":{\"decision\":\"{\\\"code\\\":\\\"10000\\\",\\\"from\\\":\\\"shark_admin\\\",\\\"version\\\":\\\"\\\",\\\"type\\\":\\\"verify\\\",\\\"region\\\":\\\"i18n-bd\\\",\\\"subtype\\\":\\\"slide\\\",\\\"detail\\\":\\\"D54gt1hfJefxZVZ61KTBJkST2dtWEmJvbiA4vXkqcYimlb5xNX*w36ndA-QXEnFW02u4i37YTkh4dr7cuzItcxd-WIbWvVVTtEfMCNd9*m4sTTtrT-eb1GvD2fTrW3X4gWyUqdYiOcjAvqyq13nZM*Tn05dPibvsCwG2a-nHp*z1aTgqKecbtPCD9ahGRjsvU1sSi-2dZV0U4E4Pd87ggD1Gl5sWYrf4CPSJGAgAEuMMz6pWJNn*OKl0-H1zri9Si8sgz3b1mmkUNLTz0nr-fBWL*xJsx9SUQnJwDp8B2iTJQiXWGFBSOCCazXpmTId5NbGo2DzjCC4a\\\",\\\"server_sdk_env\\\":\\\"{\\\\\\\"idc\\\\\\\":\\\\\\\"mya\\\\\\\",\\\\\\\"region\\\\\\\":\\\\\\\"Asia-SouthEastBD\\\\\\\",\\\\\\\"server_type\\\\\\\":\\\\\\\"business\\\\\\\"}\\\",\\\"log_id\\\":\\\"2026101318570063C2B9DA60C76DB14ED9\\\"}\",\"ack\":\"1\"}}"
+    },
+    {
+      "event": "SSE_REPLY_END",
+      "data": "{\"end_type\":3}"
+    }
+  ]
+}

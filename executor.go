@@ -6,15 +6,8 @@ import (
 	"fmt"
 )
 
-// SubmitRequest is one video request, already validated by the API layer.
-type SubmitRequest struct {
-	Prompt   string
-	Ratio    string
-	Model    string
-	Duration int
-	// ReferenceImages are optional source images for image-to-video.
-	ReferenceImages [][]byte
-}
+// SubmitRequest lives in dola.go, next to the code that renders it onto the
+// wire, because the phrasing of the prompt is what selects the output.
 
 // Executor turns a request into an upstream conversation id.
 //

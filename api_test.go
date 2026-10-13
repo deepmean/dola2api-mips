@@ -130,14 +130,14 @@ func TestAPIAcceptsAValidKeyAndReturnsATask(t *testing.T) {
 			t.Fatalf("decode: %v", err)
 		}
 		if polled.State == TaskSucceeded {
-			if len(polled.Videos) != 1 {
-				t.Fatalf("videos = %+v", polled.Videos)
+			if len(polled.Media) != 1 {
+				t.Fatalf("media = %+v", polled.Media)
 			}
-			if polled.Videos[0].URL == "" {
+			if polled.Media[0].URL == "" {
 				t.Error("the video has no URL")
 			}
-			if polled.Videos[0].ContentURL != "/v1/videos/"+task.ID+"/content" {
-				t.Errorf("content_url = %q", polled.Videos[0].ContentURL)
+			if polled.Media[0].ContentURL != "/v1/videos/"+task.ID+"/content" {
+				t.Errorf("content_url = %q", polled.Media[0].ContentURL)
 			}
 			return
 		}
@@ -233,6 +233,78 @@ func TestAPIAdminKeyAlsoAuthorizes(t *testing.T) {
 	rec := doRequest(t, apiRouter(api), http.MethodGet, "/v1/videos/anything", "", "admin-test")
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404 (authorised, task absent)", rec.Code)
+	}
+}
+
+func TestAPIImageEndpointSetsTheImageKind(t *testing.T) {
+	exec := &fakeExecutor{conversationID: "conv-1"}
+	api, pool, _ := newTestAPI(t, exec, Config{})
+	ctx, cancel := newTestContext()
+	defer cancel()
+	pool.Start(ctx)
+	defer pool.Close()
+
+	rec := doRequest(t, apiRouter(api), http.MethodPost, "/v1/images",
+		`{"prompt":"a cat","ratio":"1:1"}`, "sk-test")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var task apiTask
+	_ = json.Unmarshal(rec.Body.Bytes(), &task)
+	stored, ok := pool.Get(task.ID)
+	if !ok {
+		t.Fatal("the task is not in the pool")
+	}
+	// The kind is what decides how the prompt is phrased, and the phrasing is
+	// what makes the upstream produce an image instead of a video.
+	if stored.Request.Kind != "image" {
+		t.Errorf("kind = %q, want image", stored.Request.Kind)
+	}
+}
+
+func TestAPIVideoEndpointDefaultsToVideoKind(t *testing.T) {
+	exec := &fakeExecutor{conversationID: "conv-1"}
+	api, pool, _ := newTestAPI(t, exec, Config{})
+	ctx, cancel := newTestContext()
+	defer cancel()
+	pool.Start(ctx)
+	defer pool.Close()
+
+	rec := doRequest(t, apiRouter(api), http.MethodPost, "/v1/videos", `{"prompt":"a cat"}`, "sk-test")
+	var task apiTask
+	_ = json.Unmarshal(rec.Body.Bytes(), &task)
+	stored, _ := pool.Get(task.ID)
+	if stored.Request.Kind != "video" {
+		t.Errorf("kind = %q, want video", stored.Request.Kind)
+	}
+}
+
+func TestAPIRejectsAnUnknownKind(t *testing.T) {
+	exec := &fakeExecutor{conversationID: "conv-1"}
+	api, _, _ := newTestAPI(t, exec, Config{})
+	rec := doRequest(t, apiRouter(api), http.MethodPost, "/v1/videos",
+		`{"prompt":"a cat","kind":"audio"}`, "sk-test")
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestAPIUnknownPathSaysWhatWasAsked(t *testing.T) {
+	exec := &fakeExecutor{conversationID: "conv-1"}
+	api, _, _ := newTestAPI(t, exec, Config{})
+
+	rec := doRequest(t, apiRouter(api), http.MethodPost, "/v1/chat/completions/typo", `{}`, "sk-test")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	// A bare "404 page not found" with nothing in the body is what made a client
+	// integration hard to diagnose.
+	body := rec.Body.String()
+	if !strings.Contains(body, "/v1/chat/completions/typo") {
+		t.Errorf("the 404 does not name the path that was asked for: %s", body)
+	}
+	if !strings.Contains(body, "not_found") {
+		t.Errorf("the 404 is not the structured error shape: %s", body)
 	}
 }
 

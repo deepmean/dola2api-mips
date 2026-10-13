@@ -97,15 +97,18 @@ func TestExtractPollFindsVideoAndText(t *testing.T) {
 	if len(result.Texts) != 1 || result.Texts[0] != "a cat on a windowsill" {
 		t.Errorf("texts = %v", result.Texts)
 	}
-	if len(result.Videos) != 1 {
-		t.Fatalf("videos = %d, want 1 (type 1 creations must be ignored)", len(result.Videos))
+	if len(result.Media) != 1 {
+		t.Fatalf("media = %d, want 1 (a type 1 creation with no image payload carries nothing)", len(result.Media))
 	}
-	v := result.Videos[0]
-	if v.DownloadURL != "https://cdn.example/watermarked.mp4" {
-		t.Errorf("download url = %q", v.DownloadURL)
+	v := result.Media[0]
+	if v.Kind != "video" {
+		t.Errorf("kind = %q, want video", v.Kind)
 	}
-	if v.UnwatermarkedURL != "https://cdn.example/original.mp4" {
-		t.Errorf("unwatermarked url = %q", v.UnwatermarkedURL)
+	if v.WatermarkedURL != "https://cdn.example/watermarked.mp4" {
+		t.Errorf("watermarked url = %q", v.WatermarkedURL)
+	}
+	if v.URL != "https://cdn.example/original.mp4" {
+		t.Errorf("url = %q, want the unwatermarked original", v.URL)
 	}
 	if v.Cover != "https://cdn.example/cover.jpg" {
 		t.Errorf("cover = %q", v.Cover)
@@ -181,8 +184,8 @@ func TestUpstreamPollEndToEnd(t *testing.T) {
 	if !strings.Contains(sawBody, `"cmd":3100`) {
 		t.Errorf("body = %q", sawBody)
 	}
-	if len(result.Videos) != 1 || result.Videos[0].UnwatermarkedURL == "" {
-		t.Errorf("Poll did not surface the video: %+v", result.Videos)
+	if len(result.Media) != 1 || result.Media[0].URL == "" {
+		t.Errorf("Poll did not surface the media: %+v", result.Media)
 	}
 }
 
@@ -365,8 +368,58 @@ func TestBuildSubmitBodyShape(t *testing.T) {
 		t.Errorf("block_type = %v, want 10000", block["block_type"])
 	}
 	text := block["content"].(map[string]any)["text_block"].(map[string]any)["text"]
-	if text != "a cat" {
-		t.Errorf("prompt = %v", text)
+	// The phrasing is what selects the output: a bare prompt comes back as a
+	// batch of images instead of a video, which is how a video request was
+	// silently answered with four pictures.
+	if text != "Generate video: a cat, 9:16" {
+		t.Errorf("prompt = %v, want the client's phrasing", text)
+	}
+}
+
+func TestWirePromptSelectsTheOutput(t *testing.T) {
+	video := wirePrompt(SubmitRequest{Prompt: "a cat", Ratio: "9:16"})
+	if video != "Generate video: a cat, 9:16" {
+		t.Errorf("video prompt = %q", video)
+	}
+	// An image request is sent bare, which is what produced images.
+	image := wirePrompt(SubmitRequest{Prompt: "a cat", Ratio: "1:1", Kind: "image"})
+	if image != "a cat" {
+		t.Errorf("image prompt = %q, want the bare prompt", image)
+	}
+}
+
+func TestExtractPollFindsImages(t *testing.T) {
+	// A type 1 creation carries an image, not a video, and the URL lives under
+	// image_ori rather than in video_model.
+	response := []byte(`{"downlink_body":{"pull_singe_chain_downlink_body":{"messages":[
+	  {"content":[{"block_type":2074,"content":{"creation_block":{"creations":[
+	    {"type":1,"image":{"image_thumb":{"url":"https://cdn/thumb.jpg"},
+	                       "image_preview":{"url":"https://cdn/preview.jpg"},
+	                       "image_ori":{"url":"https://cdn/original.jpg"}}},
+	    {"type":1,"image":{"image_thumb":{"url":"https://cdn/only-thumb.jpg"}}},
+	    {"type":1,"image":{}},
+	    {"type":2,"video":{"download_url":"https://cdn/v.mp4"}}
+	  ]}}}]}
+	]}}}`)
+
+	result, err := extractPoll("conv-images", response)
+	if err != nil {
+		t.Fatalf("extractPoll: %v", err)
+	}
+	if len(result.Media) != 3 {
+		t.Fatalf("media = %d, want 3 (two images and one video)", len(result.Media))
+	}
+	if result.Media[0].Kind != "image" || result.Media[0].URL != "https://cdn/original.jpg" {
+		t.Errorf("first item = %+v, want the full-size original", result.Media[0])
+	}
+	// A creation with only a thumb still yields something usable.
+	if result.Media[1].URL != "https://cdn/only-thumb.jpg" {
+		t.Errorf("second item = %+v, want the thumb as a fallback", result.Media[1])
+	}
+	// A creation with no image payload at all is dropped rather than reported
+	// as an empty result.
+	if result.Media[2].Kind != "video" {
+		t.Errorf("third item = %+v, want the video", result.Media[2])
 	}
 }
 

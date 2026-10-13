@@ -64,7 +64,7 @@ func (a *api) registerChat(mux *http.ServeMux) {
 // This service generates video, not text, so the mapping is deliberately plain:
 // the last user message becomes the prompt, and the answer says what happened.
 // Returning the task rather than blocking forever is the honest shape for an
-// asynchronous backend — a chat client that shows "still working, poll here" is
+// asynchronous backend 閳?a chat client that shows "still working, poll here" is
 // more useful than one that times out with nothing.
 func (a *api) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxAPIRequestBytes))
@@ -91,7 +91,7 @@ func (a *api) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	submit, err := a.validate(apiRequest{Prompt: prompt, Model: req.Model})
+	submit, err := a.validate(apiRequest{Prompt: prompt, Model: req.Model}, "video")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request")
 		return
@@ -166,8 +166,8 @@ func (a *api) awaitTask(ctx context.Context, id string, budget time.Duration) Ta
 func describeTask(task Task, req SubmitRequest) string {
 	switch task.State {
 	case TaskSucceeded:
-		if len(task.Videos) > 0 {
-			url := bestURL(task.Videos[0])
+		if len(task.Media) > 0 {
+			url := bestURL(task.Media[0])
 			return fmt.Sprintf("Video ready (%s, %ds).\n\n%s\n\nPoll: GET /v1/videos/%s",
 				req.Model, req.Duration, url, task.ID)
 		}

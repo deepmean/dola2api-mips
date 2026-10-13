@@ -45,7 +45,7 @@ func TestRetrieverRedirectSendsNoBytes(t *testing.T) {
 	r := newTestRetriever(t, Config{StoreMode: "redirect"}, cdn)
 
 	rec := httptest.NewRecorder()
-	if err := r.Deliver(context.Background(), rec, Video{UnwatermarkedURL: cdn.URL + "/a.mp4"}); err != nil {
+	if err := r.Deliver(context.Background(), rec, Media{Kind: "video", URL: cdn.URL + "/a.mp4"}); err != nil {
 		t.Fatalf("Deliver: %v", err)
 	}
 	if rec.Code != http.StatusFound {
@@ -64,7 +64,7 @@ func TestRetrieverPipeStreamsTheVideo(t *testing.T) {
 	r := newTestRetriever(t, Config{StoreMode: "pipe"}, cdn)
 
 	rec := httptest.NewRecorder()
-	if err := r.Deliver(context.Background(), rec, Video{UnwatermarkedURL: cdn.URL + "/a.mp4"}); err != nil {
+	if err := r.Deliver(context.Background(), rec, Media{Kind: "video", URL: cdn.URL + "/a.mp4"}); err != nil {
 		t.Fatalf("Deliver: %v", err)
 	}
 	if rec.Code != http.StatusOK {
@@ -92,7 +92,7 @@ func TestRetrieverMirrorDownloadsOnceAndReuses(t *testing.T) {
 
 	for i := 0; i < 2; i++ {
 		rec := httptest.NewRecorder()
-		if err := r.Deliver(context.Background(), rec, Video{UnwatermarkedURL: cdn.URL + "/a.mp4"}); err != nil {
+		if err := r.Deliver(context.Background(), rec, Media{Kind: "video", URL: cdn.URL + "/a.mp4"}); err != nil {
 			t.Fatalf("Deliver %d: %v", i, err)
 		}
 		if rec.Body.String() != "VIDEO-BYTES" {
@@ -126,7 +126,7 @@ func TestRetrieverMirrorSweepsExpiredFiles(t *testing.T) {
 	r := newTestRetriever(t, Config{StoreMode: "mirror", MirrorDir: dir, MirrorTTL: time.Hour}, cdn)
 
 	rec := httptest.NewRecorder()
-	if err := r.Deliver(context.Background(), rec, Video{UnwatermarkedURL: cdn.URL + "/a.mp4"}); err != nil {
+	if err := r.Deliver(context.Background(), rec, Media{Kind: "video", URL: cdn.URL + "/a.mp4"}); err != nil {
 		t.Fatalf("Deliver: %v", err)
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
@@ -155,7 +155,7 @@ func TestRetrieverMirrorRejectsOversizedVideo(t *testing.T) {
 	r := newTestRetriever(t, Config{StoreMode: "mirror", MirrorDir: dir, MirrorMaxBytes: 128, MirrorTTL: time.Hour}, cdn)
 
 	rec := httptest.NewRecorder()
-	err := r.Deliver(context.Background(), rec, Video{UnwatermarkedURL: cdn.URL + "/a.mp4"})
+	err := r.Deliver(context.Background(), rec, Media{Kind: "video", URL: cdn.URL + "/a.mp4"})
 	if err == nil {
 		t.Fatal("an oversized video was mirrored")
 	}
@@ -189,7 +189,7 @@ func TestRetrieverReportsUpstreamErrors(t *testing.T) {
 	r := newTestRetriever(t, Config{StoreMode: "pipe"}, cdn)
 
 	rec := httptest.NewRecorder()
-	err := r.Deliver(context.Background(), rec, Video{UnwatermarkedURL: cdn.URL + "/a.mp4"})
+	err := r.Deliver(context.Background(), rec, Media{Kind: "video", URL: cdn.URL + "/a.mp4"})
 	if err == nil {
 		t.Fatal("a 404 from the CDN was reported as success")
 	}
@@ -198,28 +198,51 @@ func TestRetrieverReportsUpstreamErrors(t *testing.T) {
 	}
 }
 
-func TestRetrieverPrefersTheUnwatermarkedURL(t *testing.T) {
+// Media.URL is already the best link available, so the retriever hands it over
+// as it stands rather than choosing between candidates.
+func TestRetrieverRedirectsToTheMediaURL(t *testing.T) {
 	r := newTestRetriever(t, Config{StoreMode: "redirect"}, nil)
 	rec := httptest.NewRecorder()
-	if err := r.Deliver(context.Background(), rec, Video{
-		DownloadURL:      "https://cdn/watermarked.mp4",
-		UnwatermarkedURL: "https://cdn/original.mp4",
+	if err := r.Deliver(context.Background(), rec, Media{
+		Kind: "video", URL: "https://cdn/original.mp4", WatermarkedURL: "https://cdn/watermarked.mp4",
 	}); err != nil {
 		t.Fatalf("Deliver: %v", err)
 	}
 	if got := rec.Header().Get("Location"); got != "https://cdn/original.mp4" {
-		t.Errorf("Location = %q, want the unwatermarked original", got)
+		t.Errorf("Location = %q, want the media URL", got)
+	}
+}
+
+// An image must be delivered too: the same endpoint serves both kinds, and the
+// content type has to follow.
+func TestRetrieverDeliversAnImage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("JPEG-BYTES"))
+	}))
+	defer srv.Close()
+
+	r := newTestRetriever(t, Config{StoreMode: "pipe"}, srv)
+	rec := httptest.NewRecorder()
+	if err := r.Deliver(context.Background(), rec, Media{Kind: "image", URL: srv.URL + "/a.jpg"}); err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	if rec.Body.String() != "JPEG-BYTES" {
+		t.Errorf("body = %q", rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/jpeg" {
+		t.Errorf("Content-Type = %q, want the upstream's image type", ct)
 	}
 }
 
 func TestRetrieverRejectsAVideoWithoutAURL(t *testing.T) {
 	r := newTestRetriever(t, Config{StoreMode: "redirect"}, nil)
-	if err := r.Deliver(context.Background(), httptest.NewRecorder(), Video{}); err == nil {
+	if err := r.Deliver(context.Background(), httptest.NewRecorder(), Media{}); err == nil {
 		t.Error("a video with no URL was delivered")
 	}
 }
 
-func TestValidVideoURL(t *testing.T) {
+func TestValidMediaURL(t *testing.T) {
 	cases := []struct {
 		raw  string
 		want bool
@@ -231,8 +254,8 @@ func TestValidVideoURL(t *testing.T) {
 		{"not a url", false},
 	}
 	for _, c := range cases {
-		if got := ValidVideoURL(c.raw); got != c.want {
-			t.Errorf("ValidVideoURL(%q) = %t, want %t", c.raw, got, c.want)
+		if got := ValidMediaURL(c.raw); got != c.want {
+			t.Errorf("ValidMediaURL(%q) = %t, want %t", c.raw, got, c.want)
 		}
 	}
 }
