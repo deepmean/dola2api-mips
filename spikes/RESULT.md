@@ -234,6 +234,39 @@ shell bundle 里也写着 mssdk 的 `enablePathList` **包含 `/chat/completion`
 
 ---
 
+### 7.3 方案 A 的进展与当前阻塞
+
+**已解出并验证：`X-Bogus`（16 字符）**
+
+页面把签名器挂成全局 `window.bdms`（两个导出：`init`、`frontierSign`）。用
+`frontierSign({X-MS-STUB: <查询串>})` 当 oracle，把输出解回内部 9 字节头，逐字段钉死了算法：
+
+```
+u[0]      = 63 & (++bogusIndex)          每页递增计数器
+u[1],u[2] = envcode（大端）               自动化检测标志位
+u[3]      = 14                            ubcode 常量
+u[4],u[5] = md5(md5(""))[14:16]           = 69,63 常量
+u[6],u[7] = md5(hexDecode(stub))[14:16]   唯一随请求变化的部分
+u[8]      = 随机
+payload   = u + xor(u)  →  RC4(密钥=单个随机字节)  →  自定义字母表 base64
+```
+
+`M` = 纯 MD5（无盐）、`r.decode` = 十六进制解码（JS 语义：非十六进制字符当 0、奇数尾字符丢弃）
+——这两个是最初判错的点，修正后 4/4 样本全部命中。
+
+**已用 Go 纯标准库实现**（`bdms.go` + `bdms_test.go`，8 个测试，含 oracle 采集的 4 组向量）。
+`envcode` 对诚实的 Go 客户端恒为 1——与干净浏览器相同，比 headless 浏览器更"干净"。
+
+**阻塞：`a_bogus`（约 180 字符）是另一个签名，而且必需**
+
+实测：带有效 `X-Bogus` 头、不带 `a_bogus` 提交 → **仍然 `710022004` 风控**。
+`frontierSign` 不产出它；SDK 里 29KB 的大 blob 是二进制（非 WASM），生产者在懒加载代码里未定位。
+
+**顺带发现的独立 bug**：当前 Web 客户端发 `pc_version=3.39.1` + `device_id=7686671608228726325`，
+而上游 `dola_client` 发 `pc_version=3.32.62` 且**不带 `device_id`**——版本漂移。
+
+---
+
 ## 8. 计划修正汇总
 
 | 修正 | 依据 |
