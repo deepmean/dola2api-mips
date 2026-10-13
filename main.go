@@ -126,6 +126,13 @@ func main() {
 	guard := NewGuardFromConfig(cfg)
 	srv := newServer(cfg, guard)
 
+	egress, err := NewEgress(cfg)
+	if err != nil {
+		log.Fatalf("egress: %v", err)
+	}
+	defer egress.Close()
+	srv.egressState = egress.State
+
 	raw, err := net.Listen("tcp", cfg.Addr())
 	if err != nil {
 		log.Fatalf("listen %s: %v", cfg.Addr(), err)

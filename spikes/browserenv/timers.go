@@ -24,10 +24,10 @@ type Timers struct {
 }
 
 type scheduled struct {
-	id       int64
-	callback goja.Callable
-	due      time.Time
-	interval time.Duration // zero for a one-shot timer
+	id        int64
+	callback  goja.Callable
+	due       time.Time
+	interval  time.Duration // zero for a one-shot timer
 	cancelled bool
 }
 

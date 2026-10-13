@@ -180,9 +180,13 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if cfg.RelayURL == "" && cfg.EgressMode == "relay" {
 		cfg.RelayURL = defaultRelayURL
 	}
+	// A comma-separated list is allowed so DOLA_EGRESS_ROTATE has something to
+	// rotate over; each entry is validated on its own.
 	if cfg.RelayURL != "" {
-		if err := requireHTTPURL("DOLA_RELAY_URL", cfg.RelayURL); err != nil {
-			return Config{}, err
+		for _, entry := range strings.Split(cfg.RelayURL, ",") {
+			if err := requireHTTPURL("DOLA_RELAY_URL", strings.TrimSpace(entry)); err != nil {
+				return Config{}, err
+			}
 		}
 	}
 	cfg.RelayKey = strings.TrimSpace(getenv("DOLA_RELAY_KEY"))

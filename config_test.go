@@ -156,6 +156,23 @@ func TestLoadConfigEgressValidation(t *testing.T) {
 	if _, err := LoadConfig(envMap(both)); err != nil {
 		t.Errorf("explicit DOLA_EGRESS=relay should resolve the ambiguity, got %v", err)
 	}
+
+	// A comma-separated list is allowed so DOLA_EGRESS_ROTATE has something to
+	// rotate over, and every entry is validated.
+	cfg, err := LoadConfig(envMap(map[string]string{
+		"DOLA_RELAY_URL": "https://relay-a.example/, https://relay-b.example/",
+	}))
+	if err != nil {
+		t.Errorf("a relay list should be accepted, got %v", err)
+	}
+	if cfg.RelayURL == "" || !strings.Contains(cfg.RelayURL, "relay-b") {
+		t.Errorf("the relay list was not kept as configured: %q", cfg.RelayURL)
+	}
+	if _, err := LoadConfig(envMap(map[string]string{
+		"DOLA_RELAY_URL": "https://relay-a.example/,ftp://bad.example/",
+	})); err == nil {
+		t.Error("a bad entry inside the relay list was accepted")
+	}
 }
 
 func TestLoadConfigNoProxyList(t *testing.T) {
