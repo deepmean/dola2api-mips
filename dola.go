@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -306,7 +307,7 @@ func newUUID() string {
 // The response is an SSE stream: the conversation id arrives in the SSE_ACK
 // event, and a refusal arrives in STREAM_ERROR. Only the first acknowledgement
 // is needed, so the stream is read just far enough and then closed rather than
-// drained — the generation continues upstream and is picked up by Poll.
+// drained 鈥?the generation continues upstream and is picked up by Poll.
 func (u *Upstream) Submit(ctx context.Context, cookie string, req SubmitRequest) (string, error) {
 	body, err := buildSubmitBody(req, u.now())
 	if err != nil {
@@ -484,11 +485,31 @@ func handleEvent(event, data string) (conversationID string, stop bool, err erro
 			ErrorMsg  string `json:"error_msg"`
 		}
 		if json.Unmarshal([]byte(data), &failure) == nil {
-			return "", true, fmt.Errorf("upstream refused: %v %s", failure.ErrorCode, failure.ErrorMsg)
+			return "", true, fmt.Errorf("upstream refused: %s %s",
+				formatErrorCode(failure.ErrorCode), failure.ErrorMsg)
 		}
 		return "", true, errors.New("upstream refused with an unreadable error")
 	}
 	return "", false, nil
+}
+
+// formatErrorCode renders error_code, which arrives as a JSON number.
+//
+// Printing it with %v gives scientific notation, and 7.10022002e+08 is useless
+// in a log: the number that identifies the refusal is 710022002. An on-device
+// acceptance run is what surfaced this, which is why the codes are worth
+// rendering exactly.
+func formatErrorCode(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return "(none)"
+	case float64:
+		return strconv.FormatInt(int64(v), 10)
+	case string:
+		return v
+	default:
+		return fmt.Sprint(v)
+	}
 }
 
 func firstLine(raw []byte, limit int) string {

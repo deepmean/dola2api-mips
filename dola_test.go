@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -218,6 +219,57 @@ func TestUpstreamPollRejectsEmptyConversation(t *testing.T) {
 	defer egress.Close()
 	if _, err := NewUpstream(egress).Poll(context.Background(), "", ""); err == nil {
 		t.Error("an empty conversation id was accepted")
+	}
+}
+
+func TestReadAckFormatsErrorCodesAsIntegers(t *testing.T) {
+	// error_code arrives as a JSON number. Rendering it with %v produced
+	// "7.10022002e+08" in the deployed service's logs, which is useless: the
+	// number that identifies the refusal is 710022002. An on-device acceptance
+	// run is what surfaced it.
+	stream := "id: 0\nevent: SSE_HEARTBEAT\ndata: {}\n\n" +
+		"id: 0\nevent: STREAM_ERROR\ndata: {\"error_code\":710022002,\"error_msg\":\"rate limited\"}\n\n"
+
+	_, err := readAck(bufio.NewReader(strings.NewReader(stream)))
+	if err == nil {
+		t.Fatal("a STREAM_ERROR was not reported as an error")
+	}
+	if strings.Contains(err.Error(), "e+08") {
+		t.Errorf("the error code was rendered in scientific notation: %v", err)
+	}
+	if !strings.Contains(err.Error(), "710022002") {
+		t.Errorf("error %q does not carry the code", err)
+	}
+	if !strings.Contains(err.Error(), "rate limited") {
+		t.Errorf("error %q does not carry the message", err)
+	}
+}
+
+func TestReadAckFindsTheConversationID(t *testing.T) {
+	stream := "id: 0\nevent: SSE_ACK\ndata: {\"ack_client_meta\":{\"conversation_id\":\"38418263229243665\"}}\n\n"
+	id, err := readAck(bufio.NewReader(strings.NewReader(stream)))
+	if err != nil {
+		t.Fatalf("readAck: %v", err)
+	}
+	if id != "38418263229243665" {
+		t.Errorf("conversation id = %q", id)
+	}
+}
+
+func TestFormatErrorCode(t *testing.T) {
+	cases := []struct {
+		in   any
+		want string
+	}{
+		{float64(710022002), "710022002"},
+		{float64(710022004), "710022004"},
+		{"710022002", "710022002"},
+		{nil, "(none)"},
+	}
+	for _, c := range cases {
+		if got := formatErrorCode(c.in); got != c.want {
+			t.Errorf("formatErrorCode(%v) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
