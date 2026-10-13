@@ -60,6 +60,7 @@ type server struct {
 	pendingTasks func() int
 	egressState  func() egressHealth
 	reloadError  func() string
+	api          *api
 }
 
 func newServer(cfg Config, guard *Guard) *server {
@@ -69,6 +70,9 @@ func newServer(cfg Config, guard *Guard) *server {
 func (s *server) mux() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.handleHealth)
+	if s.api != nil {
+		s.api.register(mux)
+	}
 	return mux
 }
 
@@ -155,6 +159,15 @@ func main() {
 	pool := NewPool(cfg, accounts, exec, upstream, log.New(os.Stderr, "pool: ", log.LstdFlags))
 	pool.Start(poolCtx)
 	srv.pendingTasks = pool.Pending
+
+	retriever, err := NewRetriever(cfg, egress)
+	if err != nil {
+		log.Fatalf("store: %v", err)
+	}
+	srv.api = newAPI(cfg, guard, pool, retriever)
+	if !srv.api.auth.configured() {
+		log.Printf("no API keys configured: /v1/* will answer 503 until DOLA_API_KEYS is set")
+	}
 
 	raw, err := net.Listen("tcp", cfg.Addr())
 	if err != nil {

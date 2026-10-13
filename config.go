@@ -57,6 +57,9 @@ type Config struct {
 	StoreMode      string // redirect | pipe | mirror
 	MirrorMaxBytes int64
 	MirrorTTL      time.Duration
+	// MirrorDir holds mirrored videos. It must be on writable storage, and on a
+	// router that means somewhere other than the overlay unless there is room.
+	MirrorDir string
 
 	// AccountsFile is the JSON list of upstream sessions. It is read at start
 	// and re-read on SIGHUP, so a session can be added without a restart.
@@ -106,6 +109,8 @@ const (
 	defaultFirstByte       = 20 * time.Second
 	defaultSubmitDeadline  = 30 * time.Second
 	defaultStoreMode       = "redirect"
+	// defaultMirrorDir is on tmpfs so a mirror never fills the overlay.
+	defaultMirrorDir = "/tmp/dola2api-mirror"
 	// defaultAccountsFile lives under the install root the init script uses, so
 	// the operator edits one file next to the binary's config.
 	defaultAccountsFile   = "/opt/dola2api/accounts.json"
@@ -256,6 +261,10 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	cfg.MirrorTTL = time.Duration(mirrorTTLHours) * time.Hour
+	cfg.MirrorDir = strings.TrimSpace(getenv("DOLA_MIRROR_DIR"))
+	if cfg.MirrorDir == "" {
+		cfg.MirrorDir = defaultMirrorDir
+	}
 
 	cfg.AccountsFile = strings.TrimSpace(getenv("DOLA_ACCOUNTS_FILE"))
 	if cfg.AccountsFile == "" {
