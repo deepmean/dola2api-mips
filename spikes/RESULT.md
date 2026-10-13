@@ -164,42 +164,66 @@ python spikes/protocol_probe.py \
 
 ---
 
-## 7. 协议提交侧（决策门）——**当前结论：纯协议提交不可用**
+## 7. 协议提交侧（决策门）——**根因：`a_bogus` 签名**
 
-脚本：`spikes/protocol_probe.py`（复用上游 `dola_client.DolaClient`）、`spikes/submit_diag.py`
-（把线上原始响应打出来）、`spikes/decode_msg.py`（解错误字节）。
+### 7.1 结论先行
 
-### 7.1 三条出口的完整矩阵
+页面加载的 `bdms-sdk`（ByteDance 风控 SDK）会给每个 `/chat/completion` 请求**追加一个 `a_bogus` 签名参数**。
+我们的客户端不带它，所以被风控拦下。
 
-| 出口 | HTTP | 上游返回 | 卡在哪一层 |
-| --- | --- | --- | --- |
-| direct（大陆 IP） | `302` → `https://www.dola.com/chat/` | HTML 跳转 | **地理拒绝**（操作者确认：dola 拒绝中国大陆 IP） |
-| proxy（`127.0.0.1:10808`，JP 机房 IP） | `200` + `text/event-stream` | `STREAM_ERROR 710022004` `subtype=slide` `from=shark_admin` | **风控层**（滑块验证码） |
-| **relay（Vercel `sin1`）** | `200` + `text/event-stream` | `STREAM_ERROR 718013001`「预分配会话位置信息失败」 | **通过了风控**，卡在会话创建 |
+**上游仓库的协议路径从来没实现过这个签名**：`dola_client` 里只有 `_fake_a_bogus()`（返回随机串），
+而 `server.py` 从不调用 `DolaClient`。也就是说 `DolaClient` 这条路径**从未可用**——不是我们移植得不对。
 
-三条出口**在三个不同的层被拦**。relay 是唯一通过风控的出口，也是操作者指明的必需出口。
+### 7.2 证据链
 
-### 7.2 排除的假设（都已实测）
+**① 浏览器发出的真实 URL**（从页面 `performance.getEntriesByType('resource')` 抓到）：
+
+```
+https://www.dola.com/chat/completion?aid=495671&...&msToken=PWf46-...&fp=verify_mv5xmc35_...
+   &a_bogus=x7s5hqy7DoQnCdFt8KaI99PRDhQlNBWyXPTdWNlRHquDLXtT1wBJtGrQjPiHs8D6VRsiNHI7AnS6bxxOZWRX5ZnkFmpfSBJW6U9nVzsL%2Fqq3P0ksDrgheh8zFwBCWKTPuCp4xIf6lUiHhxZ-DqriUc57H%2Fpr4O4BFHxRksyiCV4ZgPvG3VdYSWy%3D
+```
+
+同一次加载还出现了：`bdms-sdk.920ccda932.js`、`mssdk.bytedance.com/web/common?ms_appid=495671`、
+`mssdk.bytedance.com/web/r/token`、`verifycenter/1.0.0.427/index.js`（滑块验证 UI）。
+shell bundle 里也写着 mssdk 的 `enablePathList` **包含 `/chat/completion`**。
+
+**② 在真浏览器里用同样的 body/头/参数提交 → 成功**：`SSE_ACK`，`conversation_id` 拿到，
+上游回执"消耗 2 個影片生成額度"。我页内 recorder 记到的 `init.headers` 只有
+`{"Accept","Content-Type","agw-js-conv"}` —— 因为 recorder 包在 SDK 外层，**签名是 SDK 在更内层加的**，
+所以头看起来"完全一样"。
+
+**③ 排除法（全部实测）**：
 
 | 假设 | 实测 | 结论 |
 | --- | --- | --- |
-| 只是 `msToken` 过期/绑定 IP | 用服务器每次响应新发的 `X-Ms-Token` 连试 3 次 | ❌ 3/3 完全相同的 `718013001` |
-| 视频技能/`bot_id` 特有 | 改走**图片生成**（`ability_type=16` vs 视频 `17`，同端点同客户端同出口） | ❌ 报**一模一样**的 `718013001` → 不是视频层的问题 |
-| relay 把 POST body 变成 chunked，上游不认 | 经 relay POST 到 httpbin，上游看到 `Content-Length: 16` | ❌ 编码被正确保留 |
-| relay 丢/改业务头 | 请求头逐项核对（`Content-Type`/`agw-js-conv`/`Referer`/`Origin`/`Cookie`/`msToken`/`fp` 全部到位） | ❌ 请求形状正确 |
-| 登录态无效 | 响应头 `X-Tt-Agw-Login: 1`，且 `recent_conv` 读请求 `200` | ❌ 登录有效 |
+| 请求头/body/参数不对 | 与浏览器 `SUBMIT_JS` 逐字段一致；页内 fetch 用同样的东西成功 | ❌ |
+| TLS/HTTP2 指纹 | `curl_cffi` `impersonate="chrome"`（真 Chrome TLS+HTTP2）| ❌ 仍 `710022004` |
+| cookie 快照过期 | 浏览器里 `msToken`/`s_v_web_id`/`csrf` 与快照**完全一致** | ❌ |
+| 会话需要预热 | 浏览器刚成功生成后**立刻**用浏览器外客户端重试 | ❌ 仍 `710022004` |
+| 出口 IP | 浏览器与 Python 客户端**同一台机器同一出口** | ❌ |
+| 视频技能/`bot_id` 特有 | 图片生成（`ability_type=16`）报**一模一样**的错 | ❌ |
+| relay 改编码/丢头 | 经 relay POST，上游看到 `Content-Length: 16` 正确保留；头逐项核对 | ❌ |
 
-### 7.3 结论
+**④ 因果验证**：把抓到的带 `a_bogus` 的 URL 原样在浏览器外重放 →
+错误**从 `710022004`（滑块）变成 `710022002`（服务使用量过大）**。签名被接受了
+（否则会再次索要滑块），只是这条签名已过期/被重用。**门槛即签名。**
 
-**`dola_client` 的纯协议路径无法创建会话**：三条出口里唯一可用的 relay 上，任何能力（视频/图片）
-的新会话创建都稳定失败。错误信息是服务端的「预分配会话位置信息失败」，不是验证码、不是限流、
-不是登录问题。
+**⑤ 三条出口的失败层次**（早期实测）：
 
-浏览器路径能过，说明差别在于**浏览器上下文**——可能是页面加载时的一串前置调用
-（`/samantha/skill/pack`、`/alice/slot/action_bar_v3/get_item_conf`、页面 HTML 本身），
-也可能是 TLS/HTTP2 客户端指纹。两者都无法靠读代码断定，需要**一份能跑通的客户端的真实请求**。
+| 出口 | HTTP | 上游返回 | 卡在哪 |
+| --- | --- | --- | --- |
+| direct（大陆 IP） | `302` → `/chat/` | HTML 跳转 | 地理拒绝（操作者确认 dola 拒大陆 IP） |
+| proxy（JP 机房 IP） | `200` | `710022004` slide / `shark_admin` | 风控（无签名） |
+| relay（Vercel `sin1`） | `200` | `718013001` 预分配会话位置信息失败 | 过了风控层，卡在会话创建 |
 
-已排除的：请求 body 形状（与浏览器路径 `SUBMIT_JS` 逐字段对照一致）、参数集、头部、编码、token。
+### 7.3 对"路由器独立完成"的影响
+
+要让路由器自己提交，就必须**自己算出每个请求的 `a_bogus`**。这要求：
+
+- 移植 `bdms-sdk` 的签名算法（VM 混淆 JS，约 1MB，字节跳动会轮换）；
+- 签名与请求参数 + 浏览器派生指纹相关；
+- 这是业界已知的逆向目标（TikTok/豆包的 `a_bogus` 有公开实现），但它是**移动靶**，
+  属于持续维护的逆向项目，不是"移植"。
 
 ### 7.4 错误信息的解码插曲（记录以免重犯）
 

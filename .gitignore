@@ -27,3 +27,11 @@ spikes/submit_diag_result.json
 # Python bytecode from running the spike scripts.
 __pycache__/
 *.pyc
+
+# CDP cookie array (live credentials).
+spikes/cookies.cdp.json
+
+# Captured signed URL (contains a live a_bogus signature).
+spikes/captured_submit_url.txt
+spikes/tls_impersonate_result.json
+spikes/tls_after_browser.json
