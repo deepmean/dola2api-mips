@@ -96,6 +96,23 @@ func TestDeployInitScriptIsSane(t *testing.T) {
 			t.Errorf("the init script forwards %q, which is not a setting this build reads", name)
 		}
 	}
+
+	// And the other direction, which is the trap that actually bites: the init
+	// script forwards a curated list, so a setting added to the config file but
+	// not to that list is silently ignored on the device. The service would run
+	// with the built-in default and nothing would say so.
+	forwarded := map[string]bool{}
+	for _, name := range forwardedEnvNames(text) {
+		forwarded[name] = true
+	}
+	for name := range parseShellConf(t, "deploy/dola2api.conf") {
+		if !strings.HasPrefix(name, "DOLA_") {
+			continue
+		}
+		if !forwarded[name] {
+			t.Errorf("%s is set in dola2api.conf but the init script does not forward it, so the value would be ignored on the device", name)
+		}
+	}
 }
 
 // parseShellConf reads KEY=VALUE lines, which is the shape of both deploy files.

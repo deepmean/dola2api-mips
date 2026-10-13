@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dola2api 面板</title>
+<style>
+  :root { --bg:#14161a; --panel:#1c1f26; --line:#2a2f3a; --fg:#e6e8ec; --dim:#8b93a3;
+          --ok:#3fb950; --warn:#d29922; --err:#f85149; --accent:#4c8bf5; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  header { padding:14px 18px; border-bottom:1px solid var(--line); display:flex;
+           gap:12px; align-items:center; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; font-weight:600; }
+  .spacer { flex:1; }
+  main { padding:18px; display:grid; gap:18px; grid-template-columns:1fr; max-width:1100px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; }
+  h2 { font-size:13px; margin:0 0 10px; color:var(--dim); font-weight:600;
+       text-transform:uppercase; letter-spacing:.06em; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-weight:500; font-size:12px; }
+  tr:last-child td { border-bottom:none; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:6px;
+           padding:7px 12px; font:inherit; cursor:pointer; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--fg); }
+  button:disabled { opacity:.5; cursor:default; }
+  input, textarea { width:100%; background:#0f1115; color:var(--fg);
+                    border:1px solid var(--line); border-radius:6px; padding:8px; font:inherit; }
+  textarea { min-height:90px; resize:vertical; }
+  label { display:block; margin:10px 0 4px; color:var(--dim); font-size:12px; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .pill { padding:2px 8px; border-radius:99px; font-size:12px; border:1px solid var(--line); }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .err { color:var(--err); }
+  .dim { color:var(--dim); }
+  #msg { min-height:20px; }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:4px 14px; }
+  .kv div:nth-child(odd) { color:var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>dola2api</h1>
+  <span id="version" class="dim"></span>
+  <span class="spacer"></span>
+  <input id="key" type="password" placeholder="管理员密钥（存在浏览器本地）" style="width:260px">
+  <button id="save">保存密钥</button>
+  <button id="refresh" class="ghost">刷新</button>
+</header>
+
+<main>
+  <section>
+    <h2>状态</h2>
+    <div id="status" class="kv"><div class="dim">加载中…</div><div></div></div>
+  </section>
+
+  <section>
+    <h2>账号</h2>
+    <div id="accounts"></div>
+  </section>
+
+  <section>
+    <h2>添加 / 替换账号</h2>
+    <p class="dim" style="margin:0 0 6px">
+      粘贴完整 cookie。<strong>保存前会先向上游验证</strong>，无效的不会写入。
+    </p>
+    <label>标签（留空自动生成）</label>
+    <input id="label" placeholder="primary">
+    <label>Cookie</label>
+    <textarea id="cookie" placeholder="sessionid=...; sid_guard=...; ttwid=..."></textarea>
+    <div class="row" style="margin-top:10px">
+      <button id="add">验证并保存</button>
+      <span id="msg"></span>
+    </div>
+  </section>
+
+  <section>
+    <h2>最近任务</h2>
+    <div id="tasks"></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const state = { key: localStorage.getItem('dola_admin_key') || '' };
+$('key').value = state.key;
+
+function auth() { return { 'Authorization': 'Bearer ' + state.key }; }
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, Object.assign({ headers: Object.assign(auth(), opts.headers || {}) }, opts));
+  const text = await res.text();
+  let body;
+  try { body = JSON.parse(text); } catch (e) { body = { error: text.slice(0, 200) }; }
+  return { status: res.status, body };
+}
+
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c =>
+  ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c])); }
+
+function expiryCell(a) {
+  if (a.expired) return '<span class="err">已过期</span>';
+  if (a.expires_in_days === undefined) return '<span class="dim">未知</span>';
+  const d = a.expires_in_days;
+  const cls = d <= 7 ? 'warn' : 'dim';
+  return `<span class="${cls}">${d} 天</span>`;
+}
+
+async function load() {
+  if (!state.key) { $('status').innerHTML = '<div class="err">先填管理员密钥</div><div></div>'; return; }
+  const { status, body } = await api('/admin/status');
+  if (status !== 200) {
+    $('status').innerHTML = `<div class="err">${esc(body.error || status)}</div><div></div>`;
+    $('accounts').innerHTML = ''; $('tasks').innerHTML = '';
+    return;
+  }
+  $('version').textContent = body.version;
+  $('status').innerHTML = [
+    ['出口', `${body.egress.mode}${body.egress.strict ? ' · strict' : ''}${body.egress.degraded ? ' · 降级' : ''}`],
+    ['内存', `${(body.mem.heap_alloc/1048576).toFixed(1)} MB 堆 · ${body.mem.goroutines} goroutine`],
+    ['队列', `${body.pending_tasks} / ${body.max_pending_tasks}`],
+    ['执行器', `${body.executor} · 交付 ${body.store_mode}`],
+    ['重载', body.reload.last_error ? `<span class="err">${esc(body.reload.last_error)}</span>` : '正常'],
+  ].map(([k, v]) => `<div>${k}</div><div>${v}</div>`).join('');
+
+  $('accounts').innerHTML = '<table><tr><th>标签</th><th>可用</th><th>今日</th>'
+    + '<th>冷却</th><th>到期</th><th>最近错误</th><th></th></tr>'
+    + body.accounts.map(a => `<tr>
+        <td>${esc(a.label)}</td>
+        <td>${a.available ? '<span class="ok">是</span>' : '<span class="err">否</span>'}</td>
+        <td>${a.used_today}/${a.daily_limit}</td>
+        <td>${a.cooldown_remaining ? a.cooldown_remaining + 's' : '—'}</td>
+        <td>${expiryCell(a)}</td>
+        <td class="dim">${esc((a.last_error || '').slice(0, 60)) || '—'}</td>
+        <td><button class="ghost" data-del="${esc(a.label)}">删除</button></td>
+      </tr>`).join('') + '</table>';
+
+  document.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+    if (!confirm('删除账号 ' + b.dataset.del + '？')) return;
+    const r = await api('/admin/accounts/' + encodeURIComponent(b.dataset.del), { method: 'DELETE' });
+    $('msg').textContent = r.status === 200 ? '已删除' : ('失败: ' + (r.body.error || r.status));
+    $('msg').className = r.status === 200 ? 'ok' : 'err';
+    load();
+  });
+
+  const t = await api('/admin/tasks?limit=10');
+  if (t.status === 200 && t.body.tasks) {
+    $('tasks').innerHTML = t.body.tasks.length === 0 ? '<div class="dim">暂无</div>'
+      : '<table><tr><th>状态</th><th>会话</th><th>视频</th><th>错误</th></tr>'
+        + t.body.tasks.map(x => `<tr>
+            <td>${x.state === 'succeeded' ? '<span class="ok">成功</span>'
+                 : x.state === 'failed' ? '<span class="err">失败</span>' : esc(x.state)}</td>
+            <td class="dim">${esc(x.conversation_id || '—')}</td>
+            <td>${x.videos && x.videos.length ? x.videos.length : '—'}</td>
+            <td class="dim">${esc((x.error || '').slice(0, 70)) || '—'}</td>
+          </tr>`).join('') + '</table>';
+  }
+}
+
+$('save').onclick = () => {
+  state.key = $('key').value.trim();
+  localStorage.setItem('dola_admin_key', state.key);
+  load();
+};
+
+$('refresh').onclick = load;
+
+$('add').onclick = async () => {
+  const cookie = $('cookie').value.trim();
+  if (!cookie) { $('msg').textContent = '先粘贴 cookie'; $('msg').className = 'err'; return; }
+  $('add').disabled = true;
+  $('msg').textContent = '正在向上游验证…';
+  $('msg').className = 'dim';
+  const r = await api('/admin/accounts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label: $('label').value.trim(), cookie })
+  });
+  $('add').disabled = false;
+  if (r.status === 200 && r.body.ok) {
+    $('msg').textContent = '已保存（' + r.body.accounts + ' 个账号）';
+    $('msg').className = 'ok';
+    $('cookie').value = '';
+    load();
+  } else {
+    $('msg').textContent = '未保存：' + (r.body.error || r.status);
+    $('msg').className = 'err';
+  }
+};
+
+load();
+setInterval(load, 15000);
+</script>
+</body>
+</html>

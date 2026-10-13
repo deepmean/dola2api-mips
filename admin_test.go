@@ -37,7 +37,7 @@ func TestAdminRefusesWhenNoAdminKeyIsConfigured(t *testing.T) {
 	exec := &fakeExecutor{conversationID: "conv-1"}
 	pool, accounts, _ := newTestPool(t, exec, Config{})
 	cfg := Config{APIKeys: []string{"sk-test"}} // deliberately no admin key
-	api := newAPI(cfg, NewGuard(0, func() {}, false), pool, nil, accounts, nil)
+	api := newAPI(cfg, NewGuard(0, func() {}, false), pool, nil, accounts, nil, nil)
 
 	rec := doRequest(t, apiRouter(api), http.MethodGet, "/admin/status", "", "anything")
 	if rec.Code != http.StatusServiceUnavailable {

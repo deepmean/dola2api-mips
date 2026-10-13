@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -118,10 +119,12 @@ type api struct {
 	pool        *Pool
 	retriever   *Retriever
 	accounts    *AccountStore
+	upstream    *Upstream
 	egressState func() egressHealth
 }
 
-func newAPI(cfg Config, guard *Guard, pool *Pool, retriever *Retriever, accounts *AccountStore, egressState func() egressHealth) *api {
+func newAPI(cfg Config, guard *Guard, pool *Pool, retriever *Retriever,
+	accounts *AccountStore, upstream *Upstream, egressState func() egressHealth) *api {
 	return &api{
 		cfg:         cfg,
 		guard:       guard,
@@ -129,12 +132,14 @@ func newAPI(cfg Config, guard *Guard, pool *Pool, retriever *Retriever, accounts
 		pool:        pool,
 		retriever:   retriever,
 		accounts:    accounts,
+		upstream:    upstream,
 		egressState: egressState,
 	}
 }
 
 // register adds the API routes to mux.
 func (a *api) register(mux *http.ServeMux) {
+	mux.HandleFunc("GET /v1/models", a.withAuth(a.handleModels))
 	mux.HandleFunc("POST /v1/videos", a.withAuth(a.handleCreate))
 	mux.HandleFunc("GET /v1/videos/{id}", a.withAuth(a.handleGet))
 	mux.HandleFunc("GET /v1/videos/{id}/content", a.withAuth(a.handleContent))
@@ -251,10 +256,13 @@ func (a *api) validate(req apiRequest) (SubmitRequest, error) {
 
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
-		model = "seedance_v2.0"
+		model = defaultVideoModel
 	}
 	if len(model) > 64 {
 		return SubmitRequest{}, errors.New("model name is too long")
+	}
+	if !a.modelAllowed(model) {
+		return SubmitRequest{}, fmt.Errorf("unknown model %q; GET /v1/models lists the ones this service offers", model)
 	}
 
 	duration := req.Duration

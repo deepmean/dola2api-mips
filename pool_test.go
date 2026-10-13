@@ -93,6 +93,10 @@ func newTestPool(t *testing.T, exec Executor, cfg Config) (*Pool, *AccountStore,
 	poolCfg := cfg
 	poolCfg.MaxPendingTasks = 4
 	poolCfg.MaxConcurrency = 1
+	// Mirror the loader's defaults. A zero here would silently disable the
+	// behaviour under test rather than the test failing.
+	poolCfg.SubmitAttempts = defaultSubmitAttempts
+	poolCfg.AccountStrategy = defaultAccountStrategy
 	poolCfg.PollInterval = 10 * time.Millisecond
 	poolCfg.VideoTimeout = 2 * time.Second
 	poolCfg.SubmitDeadline = 2 * time.Second

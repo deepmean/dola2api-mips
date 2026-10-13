@@ -1,10 +1,115 @@
 package main
 
 import (
+	"context"
+	_ "embed"
+	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
 )
+
+// panelHTML is the operator page. It is embedded rather than served from disk
+// so the deployment stays one binary plus two files the operator owns.
+//
+//go:embed panel.html
+var panelHTML []byte
+
+// addAccountRequest is the body of POST /admin/accounts.
+type addAccountRequest struct {
+	Label  string `json:"label"`
+	Cookie string `json:"cookie"`
+}
+
+// addAccountResult reports what happened, including whether the session was
+// verified before being saved.
+type addAccountResult struct {
+	OK       bool   `json:"ok"`
+	Accounts int    `json:"accounts"`
+	Verified bool   `json:"verified"`
+	Error    string `json:"error,omitempty"`
+}
+
+// registerAdmin adds the operator routes. They require the admin key, not an
+// ordinary API key: a caller who can reload accounts can point the service at a
+// different session entirely.
+//
+// The page itself is the one route without a key, because a browser cannot send
+// a bearer token when navigating. It carries no secrets — the key is typed into
+// it and kept in the browser — and every call it makes is authenticated.
+func (a *api) registerAdmin(mux *http.ServeMux) {
+	mux.HandleFunc("GET /admin", a.handlePanel)
+	mux.HandleFunc("GET /admin/status", a.withAdmin(a.handleAdminStatus))
+	mux.HandleFunc("POST /admin/reload", a.withAdmin(a.handleAdminReload))
+	mux.HandleFunc("GET /admin/tasks", a.withAdmin(a.handleAdminTasks))
+	mux.HandleFunc("POST /admin/accounts", a.withAdmin(a.handleAddAccount))
+	mux.HandleFunc("DELETE /admin/accounts/{label}", a.withAdmin(a.handleRemoveAccount))
+}
+
+// handlePanel serves the operator page.
+func (a *api) handlePanel(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(panelHTML)
+}
+
+// handleAddAccount verifies a session and saves it.
+//
+// Verification happens first on purpose: a cookie that does not work would
+// otherwise be written, picked up by a reload, and then look like a rate limit
+// when the account got parked.
+func (a *api) handleAddAccount(w http.ResponseWriter, r *http.Request) {
+	if a.accounts == nil {
+		writeError(w, http.StatusServiceUnavailable, "no account store", "no_accounts")
+		return
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 256<<10))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "could not read the body", "bad_body")
+		return
+	}
+	var req addAccountRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error(), "bad_json")
+		return
+	}
+
+	verified := false
+	if a.upstream != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+		err := a.upstream.VerifySession(ctx, req.Cookie)
+		cancel()
+		if err != nil {
+			// Not saved, so the operator can paste a different one.
+			writeJSON(w, http.StatusBadRequest, addAccountResult{OK: false, Error: err.Error()})
+			return
+		}
+		verified = true
+	}
+
+	if err := a.accounts.Upsert(req.Label, req.Cookie); err != nil {
+		writeJSON(w, http.StatusInternalServerError, addAccountResult{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, addAccountResult{
+		OK: true, Verified: verified, Accounts: len(a.accounts.Cookies()),
+	})
+}
+
+// handleRemoveAccount drops a session.
+func (a *api) handleRemoveAccount(w http.ResponseWriter, r *http.Request) {
+	if a.accounts == nil {
+		writeError(w, http.StatusServiceUnavailable, "no account store", "no_accounts")
+		return
+	}
+	label := r.PathValue("label")
+	if err := a.accounts.Remove(label); err != nil {
+		writeJSON(w, http.StatusNotFound, addAccountResult{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, addAccountResult{OK: true, Accounts: len(a.accounts.Cookies())})
+}
 
 // adminStatus is the whole picture an operator needs, in one response.
 type adminStatus struct {
@@ -26,15 +131,6 @@ type adminReloadResult struct {
 	OK       bool   `json:"ok"`
 	Accounts int    `json:"accounts"`
 	Error    string `json:"error,omitempty"`
-}
-
-// registerAdmin adds the operator routes. They require the admin key, not an
-// ordinary API key: a caller who can reload accounts can point the service at a
-// different session entirely.
-func (a *api) registerAdmin(mux *http.ServeMux) {
-	mux.HandleFunc("GET /admin/status", a.withAdmin(a.handleAdminStatus))
-	mux.HandleFunc("POST /admin/reload", a.withAdmin(a.handleAdminReload))
-	mux.HandleFunc("GET /admin/tasks", a.withAdmin(a.handleAdminTasks))
 }
 
 // withAdmin wraps a handler with the admin-key check.

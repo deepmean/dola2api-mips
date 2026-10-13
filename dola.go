@@ -302,6 +302,114 @@ func newUUID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
+// VerifySession reports whether a session cookie is alive.
+//
+// It reads the recent-conversation list: a small authenticated call that needs
+// no signature, and the same one the standalone probe uses. This is what makes
+// pasting a cookie into the panel useful rather than a guess — a dead session
+// would otherwise only surface later, as an account parked by the cooldown with
+// an upstream error that looks like a rate limit.
+func (u *Upstream) VerifySession(ctx context.Context, cookie string) error {
+	if strings.TrimSpace(cookie) == "" {
+		return errors.New("verify: empty cookie")
+	}
+	if !strings.Contains(cookie, "sessionid=") {
+		return errors.New("verify: the cookie has no sessionid, so it cannot be a login")
+	}
+
+	body, err := buildRecentConvBody()
+	if err != nil {
+		return err
+	}
+
+	hdr := http.Header{}
+	hdr.Set("Content-Type", "application/json; encoding=utf-8")
+	hdr.Set("agw-js-conv", "str")
+	hdr.Set("Accept", "*/*")
+	hdr.Set("Cookie", cookie)
+
+	resp, err := u.egress.Do(ctx, http.MethodPost,
+		u.base+"/im/chain/recent_conv?"+sessionQuery(u.tabID, cookie).Encode(), hdr, body)
+	if err != nil {
+		return fmt.Errorf("verify: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
+	if err != nil {
+		return fmt.Errorf("verify: read: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("verify: upstream status %d: %s", resp.StatusCode, firstLine(raw, 160))
+	}
+
+	var parsed struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		// The list itself is the proof of life; an empty account still returns
+		// the field.
+		DownlinkBody *struct {
+			Chain struct {
+				Conversations []json.RawMessage `json:"conversations"`
+			} `json:"pull_recent_conv_chain_downlink_body"`
+		} `json:"downlink_body"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return fmt.Errorf("verify: upstream sent something unreadable: %s", firstLine(raw, 120))
+	}
+	if parsed.Code != 0 {
+		return fmt.Errorf("verify: upstream refused the session: %d %s", parsed.Code, parsed.Msg)
+	}
+	if parsed.DownlinkBody == nil {
+		return errors.New("verify: the session was accepted but the response carried no body")
+	}
+	return nil
+}
+
+// sessionQuery is the parameter set these calls share. msToken and fp come from
+// the cookie when it has them, since a request without them carries more risk.
+func sessionQuery(tabID, cookie string) url.Values {
+	params := url.Values{}
+	for k, v := range map[string]string{
+		"version_code": "20800", "language": "ja", "device_platform": "web",
+		"doubao_device_platform": "web", "aid": "495671", "real_aid": "495671",
+		"pkg_type": "release_version", "pc_version": "3.32.61", "doubao_pc_version": "3.32.61",
+		"region": "JP", "sys_region": "JP", "samantha_web": "1",
+		"web_platform": "browser", "use-olympus-account": "1", "web_tab_id": tabID,
+	} {
+		params.Set(k, v)
+	}
+	if token := cookieField(cookie, "msToken"); token != "" {
+		params.Set("msToken", token)
+	}
+	if fp := cookieField(cookie, "s_v_web_id"); fp != "" {
+		params.Set("fp", fp)
+	}
+	return params
+}
+
+// buildRecentConvBody is the small read that proves a session is alive.
+func buildRecentConvBody() ([]byte, error) {
+	payload := map[string]any{
+		"cmd": 3200,
+		"uplink_body": map[string]any{
+			"pull_recent_conv_chain_uplink_body": map[string]any{
+				"limit": 5, "message_count_per_conv": 1, "api_version": 1,
+				"conv_version": 0, "direction": 3,
+				"option": map[string]any{
+					"not_need_message": true, "need_complete_conversation": true,
+					"need_coco_conversation": true, "need_coco_bot": true,
+					"need_pc_pin_chain": true, "pc_pin_query_type": 0,
+				},
+			},
+		},
+		"sequence_id": newUUID(),
+		"channel":     2,
+		"version":     "1",
+	}
+	return json.Marshal(payload)
+}
+
 // Submit posts a video request and returns the conversation id.
 //
 // The response is an SSE stream: the conversation id arrives in the SSE_ACK

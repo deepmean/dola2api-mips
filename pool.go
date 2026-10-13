@@ -253,22 +253,49 @@ func (p *Pool) run(ctx context.Context, task *Task) {
 		p.signal()
 	}()
 
-	account, err := p.accounts.Pick(time.Now())
-	if err != nil {
-		p.fail(task, fmt.Errorf("no session available: %w", err))
-		return
+	// Failover: try another session before failing the task.
+	//
+	// Each failed attempt parks the session that failed, so the next Pick cannot
+	// return it and the retry genuinely moves on. Attempts are bounded because a
+	// pool of broken sessions must not turn one request into an unbounded loop.
+	attempts := p.cfg.SubmitAttempts
+	if attempts < 1 {
+		attempts = 1
 	}
 
-	// The submit and the polling each get their own deadline: a submit that
-	// hangs must not eat the time budget for waiting on the video.
-	submitCtx, cancelSubmit := context.WithTimeout(ctx, p.cfg.SubmitDeadline)
-	conversationID, err := p.exec.Submit(submitCtx, account.Cookie, task.Request)
-	cancelSubmit()
-	if err != nil {
-		p.accounts.RecordFailure(account, time.Now(), err)
-		// No extra prefix: the upstream client already says where it failed, and
-		// wrapping it again produced "submit: submit: ..." in the device log.
-		p.fail(task, err)
+	var (
+		account        *Account
+		conversationID string
+		lastErr        error
+	)
+	for attempt := 1; attempt <= attempts; attempt++ {
+		candidate, err := p.accounts.Pick(time.Now())
+		if err != nil {
+			if lastErr != nil {
+				p.fail(task, fmt.Errorf("every session failed (tried %d); last error: %w", attempt-1, lastErr))
+			} else {
+				p.fail(task, fmt.Errorf("no session available: %w", err))
+			}
+			return
+		}
+
+		// The submit and the polling each get their own deadline: a submit that
+		// hangs must not eat the time budget for waiting on the video.
+		submitCtx, cancelSubmit := context.WithTimeout(ctx, p.cfg.SubmitDeadline)
+		conversationID, err = p.exec.Submit(submitCtx, candidate.Cookie, task.Request)
+		cancelSubmit()
+		if err == nil {
+			account, lastErr = candidate, nil
+			break
+		}
+
+		lastErr = err
+		p.accounts.RecordFailure(candidate, time.Now(), err)
+		p.logger.Printf("task %s: attempt %d/%d with %q failed: %v",
+			task.ID, attempt, attempts, candidate.Label, err)
+	}
+	if lastErr != nil {
+		p.fail(task, lastErr)
 		return
 	}
 

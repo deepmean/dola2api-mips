@@ -29,6 +29,12 @@ type Config struct {
 	MaxPendingTasks int
 	DailyLimit      int
 	CooldownSec     int
+	// AccountStrategy picks which session takes the next job:
+	// least-used | round-robin | random.
+	AccountStrategy string
+	// SubmitAttempts bounds how many sessions one task may try before it is
+	// reported as failed. 1 disables failover.
+	SubmitAttempts int
 	// ResetTZ is a fixed-offset location. OpenWrt ships no tzdata, so a named
 	// zone that is not in the table below is a configuration error rather than
 	// a silent fallback to UTC (the exact bug that shifted "today" by 8h in
@@ -61,9 +67,18 @@ type Config struct {
 	// router that means somewhere other than the overlay unless there is room.
 	MirrorDir string
 
+	// VideoModels is the set of model identifiers GET /v1/models reports and
+	// POST /v1/videos accepts. Overridable because the upstream identifier is
+	// not something this project can pin down from the outside.
+	VideoModels []string
+
 	// AccountsFile is the JSON list of upstream sessions. It is read at start
 	// and re-read on SIGHUP, so a session can be added without a restart.
 	AccountsFile string
+	// SessionWarnDays is how long before a session expires the service starts
+	// saying so. Nothing can refresh one: this account type logs in through a
+	// browser, so replacing the cookie is a human step.
+	SessionWarnDays int
 
 	ReferenceImageMaxBytes int64
 	ReferenceImageMaxCount int
@@ -96,6 +111,8 @@ const (
 	defaultMaxPending      = 20
 	defaultDailyLimit      = 2
 	defaultCooldownSec     = 1800
+	defaultAccountStrategy = "least-used"
+	defaultSubmitAttempts  = 3
 	defaultResetTZ         = "Asia/Tokyo"
 	defaultVideoTimeout    = 300 * time.Second
 	defaultRefVideoTimeout = 1800 * time.Second
@@ -109,18 +126,24 @@ const (
 	defaultFirstByte       = 20 * time.Second
 	defaultSubmitDeadline  = 30 * time.Second
 	defaultStoreMode       = "redirect"
+	// defaultVideoModel is what the upstream submit body carries. The web
+	// client's own display tag for it is "Seedance 2.0".
+	defaultVideoModel = "seedance_v2.0"
 	// defaultMirrorDir is on tmpfs so a mirror never fills the overlay.
 	defaultMirrorDir = "/tmp/dola2api-mirror"
 	// defaultAccountsFile lives under the install root the init script uses, so
 	// the operator edits one file next to the binary's config.
-	defaultAccountsFile   = "/opt/dola2api/accounts.json"
-	defaultMirrorMaxBytes = 32 << 20
-	defaultMirrorTTLHours = 24
-	defaultRefImageBytes  = 4 << 20
-	defaultRefImageCount  = 30
-	defaultHeapSoftLimit  = 32 << 20
-	defaultMaxConnections = 32
-	defaultMaxHeaderBytes = 32 << 10
+	defaultAccountsFile = "/opt/dola2api/accounts.json"
+	// defaultSessionWarnDays is a week: long enough to replace a cookie without
+	// rushing, short enough that the reminder is not routine noise.
+	defaultSessionWarnDays = 7
+	defaultMirrorMaxBytes  = 32 << 20
+	defaultMirrorTTLHours  = 24
+	defaultRefImageBytes   = 4 << 20
+	defaultRefImageCount   = 30
+	defaultHeapSoftLimit   = 32 << 20
+	defaultMaxConnections  = 32
+	defaultMaxHeaderBytes  = 32 << 10
 )
 
 // fixedZoneMinutes maps the timezone names an operator may plausibly set to
@@ -182,6 +205,16 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	if cfg.CooldownSec, err = envInt(getenv, "DOLA_COOLDOWN_SEC", defaultCooldownSec); err != nil {
 		return Config{}, err
+	}
+	if cfg.AccountStrategy, err = envChoice(getenv, "DOLA_ACCOUNT_STRATEGY", defaultAccountStrategy,
+		"least-used", "round-robin", "random"); err != nil {
+		return Config{}, err
+	}
+	if cfg.SubmitAttempts, err = envInt(getenv, "DOLA_SUBMIT_ATTEMPTS", defaultSubmitAttempts); err != nil {
+		return Config{}, err
+	}
+	if cfg.SubmitAttempts < 1 {
+		return Config{}, fmt.Errorf("DOLA_SUBMIT_ATTEMPTS must be >= 1, got %d", cfg.SubmitAttempts)
 	}
 	if cfg.ResetTZ, err = parseFixedZone(envOr(getenv, "DOLA_LIMIT_RESET_TZ", defaultResetTZ)); err != nil {
 		return Config{}, err
@@ -269,6 +302,17 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	cfg.AccountsFile = strings.TrimSpace(getenv("DOLA_ACCOUNTS_FILE"))
 	if cfg.AccountsFile == "" {
 		cfg.AccountsFile = defaultAccountsFile
+	}
+	if cfg.SessionWarnDays, err = envInt(getenv, "DOLA_SESSION_WARN_DAYS", defaultSessionWarnDays); err != nil {
+		return Config{}, err
+	}
+	if cfg.SessionWarnDays < 0 {
+		return Config{}, fmt.Errorf("DOLA_SESSION_WARN_DAYS must be >= 0, got %d", cfg.SessionWarnDays)
+	}
+
+	cfg.VideoModels = envList(getenv, "DOLA_VIDEO_MODELS")
+	if len(cfg.VideoModels) == 0 {
+		cfg.VideoModels = []string{defaultVideoModel}
 	}
 
 	if cfg.ReferenceImageMaxBytes, err = envInt64(getenv, "DOLA_REFERENCE_IMAGE_MAX_BYTES", defaultRefImageBytes); err != nil {
