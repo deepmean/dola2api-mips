@@ -1,0 +1,16 @@
+{
+  "conversation_id": "38418263229243665",
+  "egress": "direct",
+  "rounds": [
+    {
+      "t": 0.5,
+      "status": 302,
+      "bytes": 136,
+      "messages": 0,
+      "texts": [],
+      "videos": [],
+      "unwatermarked": [],
+      "not_json": "<html>\r\n<head><title>302 Found</title></head>\r\n<body>\r\n<center><h1>302 Found</h1></center>\r\n<hr><center>TLB</center>\r\n</body>\r\n</html>\r\n"
+    }
+  ]
+}
