@@ -329,6 +329,35 @@ payload   = u + xor(u)  →  RC4(密钥=单个随机字节)  →  自定义字�
 
 ---
 
+### 7.8 除生成路径外，签名根本不被校验
+
+在六个签名接口上（POST，真实会话），**"无 a_bogus" 与"乱码 a_bogus" 响应完全相同**：
+
+| 接口 | 无签名 | 乱码签名 |
+|---|---|---|
+| `/samantha/skill/recommend` | `code: 0` | `code: 0` |
+| `/alice/call/downgrade_config_pc` | `code: 0` | `code: 0` |
+| `/alice/commerce/sale/subscription/entry/config/` | `code: 0` | `code: 0` |
+| `/biz/activity/get_pop_window` | `code: 0` | `code: 0` |
+| `/alice/slot/action_bar_v3/get_item_conf` | `710010202`（缺参数） | 同左 |
+| `/alice/user/config/pull` | `710010202`（缺参数） | 同左 |
+
+**四个接口连 a_bogus 都不带就返回成功。** 所以签名**只在生成路径上起作用**——而那条路正被限流掩盖。
+
+### 7.9 一键判定脚本
+
+`spikes/confirm_gate.py` 用真实请求体跑三个变体并打印对照，限流一解除即可判定：
+
+```
+none      → 710022004     （签名层拦下）
+garbage   → 710022002     ┐ 完全相同
+computed  → 710022002     ┘
+```
+
+判读：若 `garbage` 能像 `computed` 一样出片 → 只需形状正确的串；若 `garbage` 被拒而 `computed` 出片 → 必须复现真算法。
+
+---
+
 ## 8. 计划修正汇总
 
 | 修正 | 依据 |
