@@ -19,14 +19,26 @@ Dola Render Gateway 的 MIPS32 移植版：把 `coll3879xx-cyber/dola-render-gat
 
 ## 接口
 
+以下为**当前实现**（不是计划）。`/v1/*` 需 `DOLA_API_KEYS`，`/admin/*` 需 `DOLA_ADMIN_KEY`，
+`/health` 无需鉴权（监控要用，且不含任何密钥）。
+
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/v1/videos/generations` | `{model,prompt,size?,ratio?,duration?,reference_images?}` → `{id,status:"queued",...}` |
-| GET | `/v1/videos/{id}` | `{id,status,video_url,error}`，`status ∈ queued/processing/completed/failed` |
-| GET | `/v1/models` | `seedance-2.0`、`seedance-2.5` |
+| POST | `/v1/videos` | `{prompt,ratio?,model?,duration?}` → `202 {id,state,videos[]}` |
+| GET | `/v1/videos/{id}` | 任务状态；`state ∈ pending/running/succeeded/failed` |
+| GET | `/v1/videos/{id}/content` | 按 `DOLA_STORE_MODE` 交付视频（默认 302 到 CDN） |
+| GET | `/admin/status` | 出口、内存、账号、队列深度、上次重载错误 |
+| GET | `/admin/tasks?limit=N` | 最近任务（1–500，默认 50） |
+| POST | `/admin/reload` | 重新读取 `accounts.json`（等价于 SIGHUP） |
 | GET | `/health` | 账号池、出口状态、内存读数、热重载错误 |
-| GET | `/web` | 管理面板 |
-| GET | `/videos/{file}` | `redirect`（默认，302 到 CDN）/ `pipe` / `mirror` |
+
+鉴权**失败关闭**：未配置 key 时 `/v1/*` 返回 `503` 而不是对所有人开放；
+key 用常量时间比较，错的 key 与缺失的 key 不可区分。普通 API key **不能**访问 `/admin/*`
+——能重载账号的人可以把服务指向完全不同的会话。
+
+任务列表按**单调序号**排序，不按时间戳：同一时钟刻度内创建的任务用时间戳排序不确定。
+
+**面板（`/web`）尚未实现。** 操作面目前是 `/admin/*` 的 JSON 接口。
 
 ## 出口代理层
 
@@ -79,8 +91,44 @@ OOM 自保：`DOLA_HEAP_SOFT_LIMIT`（默认 32MiB）在大分配前检查 `Heap
 
 ## 部署
 
-见 [`DEPLOY-OPENWRT.md`](DEPLOY-OPENWRT.md)。目标：`/opt/dola2api/` +
-`/etc/init.d/dola2api`（procd），`/etc/sysupgrade.conf` 持久化，端口 `8790`。
+目标布局：`/opt/dola2api/`（二进制 + `dola2api.conf` + `accounts.json`）+
+`/etc/init.d/dola2api`（procd），端口 `8790`。
+
+```sh
+# 二进制从 CI 产物取
+wget -O /tmp/dola2api https://github.com/deepmean/dola2api-mips/releases/download/latest/dola2api-linux-mipsle
+ssh root@192.168.26.1 'mkdir -p /opt/dola2api'
+scp /tmp/dola2api                root@192.168.26.1:/opt/dola2api/dola2api
+scp deploy/dola2api.conf         root@192.168.26.1:/opt/dola2api/dola2api.conf
+scp accounts.json                root@192.168.26.1:/opt/dola2api/accounts.json
+scp deploy/dola2api.init         root@192.168.26.1:/etc/init.d/dola2api
+
+ssh root@192.168.26.1 '
+  chmod 700 /opt/dola2api/dola2api.conf        # 内含 API key
+  chmod 600 /opt/dola2api/accounts.json        # 内含会话 cookie
+  chmod +x /opt/dola2api/dola2api /etc/init.d/dola2api
+  /etc/init.d/dola2api enable
+  /etc/init.d/dola2api start
+  sleep 2 && logread -e dola2api | tail -5
+'
+```
+
+`accounts.json` 格式见 [`accounts.json.example`](accounts.json.example)；
+`deploy/dola2api.conf` 每项都有注释说明为什么取这个值。
+
+改完账号**不必重启**：
+
+```sh
+ssh root@192.168.26.1 '/etc/init.d/dola2api reload'      # 等价于 SIGHUP
+# 或（网络侧，无需 ssh）
+curl -X POST -H "Authorization: Bearer $DOLA_ADMIN_KEY" http://192.168.26.1:8790/admin/reload
+```
+
+热重载**保留 cookie 未变的账号的当日用量**——改个 label 或加一个账号，不会给已耗尽的账号发新额度。
+文件写坏时**运行中的集合不变**，只记录错误（`/health` 与 `/admin/status` 里可见）。
+
+**注意**：`.gitattributes` 强制 `deploy/` 下文件为 LF。CRLF 的 procd 脚本在设备上会以
+`$'\r': not found` 失败。
 
 ## 许可
 

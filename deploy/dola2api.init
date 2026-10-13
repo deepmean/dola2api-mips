@@ -1,0 +1,94 @@
+#!/bin/sh /etc/rc.common
+# OpenWrt procd service for dola2api.
+#
+# Install:
+#   scp dola2api-linux-mipsle root@192.168.26.1:/opt/dola2api/dola2api
+#   scp deploy/dola2api.conf   root@192.168.26.1:/opt/dola2api/dola2api.conf
+#   scp accounts.json          root@192.168.26.1:/opt/dola2api/accounts.json
+#   scp deploy/dola2api.init   root@192.168.26.1:/etc/init.d/dola2api
+#   ssh root@192.168.26.1 'chmod +x /opt/dola2api/dola2api /etc/init.d/dola2api;
+#                           /etc/init.d/dola2api enable; /etc/init.d/dola2api start'
+#
+# Reload the account list without dropping connections:
+#   /etc/init.d/dola2api reload
+
+START=95
+STOP=10
+USE_PROCD=1
+
+PROG=/opt/dola2api/dola2api
+CONF=/opt/dola2api/dola2api.conf
+NAME=dola2api
+
+start_service() {
+	if [ ! -x "$PROG" ]; then
+		logger -t $NAME "not starting: $PROG is missing or not executable"
+		return 1
+	fi
+
+	# shellcheck disable=SC1090
+	[ -f "$CONF" ] && . "$CONF"
+
+	procd_open_instance $NAME
+	procd_set_param command "$PROG"
+
+	# The router has no timezone database, so the offset is fixed rather than a
+	# zone name. The daily allowance is counted against this offset.
+	procd_set_param env \
+		TZ="${TZ:-CST-8}" \
+		DOLA_PORT="${DOLA_PORT:-8790}" \
+		DOLA_API_KEYS="$DOLA_API_KEYS" \
+		DOLA_ADMIN_KEY="$DOLA_ADMIN_KEY" \
+		DOLA_ACCOUNTS_FILE="${DOLA_ACCOUNTS_FILE:-/opt/dola2api/accounts.json}" \
+		DOLA_EGRESS="${DOLA_EGRESS:-relay}" \
+		DOLA_RELAY_URL="$DOLA_RELAY_URL" \
+		DOLA_RELAY_KEY="$DOLA_RELAY_KEY" \
+		DOLA_PROXY_URL="$DOLA_PROXY_URL" \
+		DOLA_STRICT_PROXY="${DOLA_STRICT_PROXY:-1}" \
+		DOLA_EGRESS_ROTATE="${DOLA_EGRESS_ROTATE:-none}" \
+		DOLA_NO_PROXY="$DOLA_NO_PROXY" \
+		DOLA_EGRESS_FIRST_BYTE_TIMEOUT="${DOLA_EGRESS_FIRST_BYTE_TIMEOUT:-25}" \
+		DOLA_EXECUTOR="${DOLA_EXECUTOR:-protocol}" \
+		DOLA_MAX_CONCURRENCY="${DOLA_MAX_CONCURRENCY:-1}" \
+		DOLA_MAX_PENDING_TASKS="${DOLA_MAX_PENDING_TASKS:-4}" \
+		DOLA_DAILY_LIMIT="${DOLA_DAILY_LIMIT:-2}" \
+		DOLA_COOLDOWN_SEC="${DOLA_COOLDOWN_SEC:-900}" \
+		DOLA_LIMIT_RESET_TZ="${DOLA_LIMIT_RESET_TZ:-+08:00}" \
+		DOLA_VIDEO_TIMEOUT="${DOLA_VIDEO_TIMEOUT:-600}" \
+		DOLA_POLL_INTERVAL="${DOLA_POLL_INTERVAL:-10}" \
+		DOLA_TASK_TTL="${DOLA_TASK_TTL:-30m}" \
+		DOLA_STORE_MODE="${DOLA_STORE_MODE:-redirect}" \
+		DOLA_MIRROR_DIR="${DOLA_MIRROR_DIR:-/tmp/dola2api-mirror}" \
+		DOLA_MIRROR_MAX_BYTES="${DOLA_MIRROR_MAX_BYTES:-67108864}" \
+		DOLA_MIRROR_TTL_HOURS="${DOLA_MIRROR_TTL_HOURS:-6}" \
+		DOLA_HEAP_SOFT_LIMIT="${DOLA_HEAP_SOFT_LIMIT:-33554432}" \
+		DOLA_MAX_CONNECTIONS="${DOLA_MAX_CONNECTIONS:-32}" \
+		DOLA_MAX_HEADER_BYTES="${DOLA_MAX_HEADER_BYTES:-16384}" \
+		DOLA_FREE_OS_AFTER_JOB="${DOLA_FREE_OS_AFTER_JOB:-1}" \
+		GOMEMLIMIT="${GOMEMLIMIT:-32MiB}" \
+		GOGC="${GOGC:-30}"
+
+	# Restart on a crash, but not forever: if it dies five times inside an hour,
+	# stop trying rather than loop on a broken configuration.
+	procd_set_param respawn 3600 5 5
+
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+
+	# The router's OOM killer does not know which process caused the pressure,
+	# so the service fails its own requests at the soft limit instead.
+	procd_set_param limits nofile="1024"
+
+	procd_close_instance
+}
+
+reload_service() {
+	# SIGHUP re-reads accounts.json in place. Sessions whose cookie is unchanged
+	# keep their daily usage, so a reload cannot hand an exhausted session a
+	# fresh quota.
+	procd_send_signal $NAME
+}
+
+stop_service() {
+	logger -t $NAME "stopping"
+}

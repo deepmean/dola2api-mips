@@ -13,3 +13,6 @@ go.mod text eol=lf
 deploy/init.d-* text eol=lf
 deploy/deploy.sh text eol=lf
 deploy/*.sh text eol=lf
+# dola2api.init has no .sh suffix but is executed by procd on the router.
+deploy/dola2api.init text eol=lf
+deploy/dola2api.conf text eol=lf
