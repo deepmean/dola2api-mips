@@ -19,6 +19,11 @@ cookies*.txt
 .env
 .env.local
 
-# Probe output can contain signed CDN URLs and conversation ids.
+# Probe output can contain signed CDN URLs, conversation ids and challenge blobs.
 spikes/protocol_result.json
 spikes/verify_result.json
+spikes/submit_diag_result.json
+
+# Python bytecode from running the spike scripts.
+__pycache__/
+*.pyc
