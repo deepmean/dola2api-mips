@@ -594,6 +594,10 @@ func (u *Upstream) Submit(ctx context.Context, cookie string, req SubmitRequest)
 	reader := bufio.NewReaderSize(io.LimitReader(resp.Body, maxSubmitBody), 8<<10)
 	conversationID, streamErr := readAck(reader)
 	if streamErr != nil {
+		// A refusal says as much about the path as about the request. Parking
+		// the relay that carried it means a retry through a different one is
+		// genuinely a different attempt rather than the same one again.
+		u.egress.MarkRefused(streamErr.Error())
 		return "", fmt.Errorf("submit: %w", streamErr)
 	}
 	if conversationID == "" {

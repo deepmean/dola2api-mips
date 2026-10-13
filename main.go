@@ -140,6 +140,9 @@ func main() {
 		log.Fatalf("egress: %v", err)
 	}
 	defer egress.Close()
+	// The relay decision has to be visible: a refusal that parks a relay looks
+	// exactly like a request that failed for an unrelated reason otherwise.
+	egress.Log = func(format string, args ...any) { log.Printf("egress: "+format, args...) }
 	srv.egressState = egress.State
 
 	// A missing accounts file is not fatal: the service starts, /health reports

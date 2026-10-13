@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -325,6 +326,88 @@ func TestEgressRotateRoundRobin(t *testing.T) {
 	}
 	if first == 0 || second == 0 {
 		t.Errorf("round-robin used relay A %d time(s) and B %d time(s); both should be used", first, second)
+	}
+}
+
+// A risk-control refusal arrives as a 200 with an error in the body, so the
+// transport never sees a failure. Without MarkRefused a pool of relays would
+// keep sending every request through the one being refused.
+func TestEgressMarkRefusedSkipsThatRelayNext(t *testing.T) {
+	upstream := newUpstream(t, http.StatusOK)
+	var hitsA, hitsB int32
+	relayA := relayServer(t, &hitsA)
+	relayB := relayServer(t, &hitsB)
+
+	cfg := testConfig()
+	cfg.RelayURL = relayA.URL + "," + relayB.URL
+	cfg.EgressRotate = "round-robin"
+	cfg.NoProxy = nil
+
+	e, err := NewEgress(cfg)
+	if err != nil {
+		t.Fatalf("NewEgress: %v", err)
+	}
+	defer e.Close()
+
+	// One request through one of them, then report that relay refused.
+	resp, err := e.Do(context.Background(), http.MethodPost, upstream.srv.URL+"/chat/completion", nil, []byte("{}"))
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	resp.Body.Close()
+	e.MarkRefused("710022004 slide")
+
+	// The relay that carried the refusal must not be chosen again while it is
+	// parked, so every later request goes to the other one.
+	parked, other := &hitsA, &hitsB
+	if atomic.LoadInt32(&hitsA) == 0 {
+		parked, other = &hitsB, &hitsA
+	}
+	if atomic.LoadInt32(parked) == 0 {
+		t.Fatal("no relay carried the first request")
+	}
+	parkedAfter := atomic.LoadInt32(parked)
+	otherAfter := atomic.LoadInt32(other)
+
+	for i := 0; i < 4; i++ {
+		resp, err := e.Do(context.Background(), http.MethodPost, upstream.srv.URL+"/chat/completion", nil, []byte("{}"))
+		if err != nil {
+			t.Fatalf("Do after refusal: %v", err)
+		}
+		resp.Body.Close()
+	}
+	if got := atomic.LoadInt32(parked); got != parkedAfter {
+		t.Errorf("the parked relay was used %d more time(s)", got-parkedAfter)
+	}
+	if got := atomic.LoadInt32(other); got <= otherAfter {
+		t.Errorf("the other relay was not used: %d then %d", otherAfter, got)
+	}
+}
+
+// With one relay there is nowhere to move to, so parking it would only turn a
+// clear upstream refusal into a local one.
+func TestEgressMarkRefusedIsInertWithASingleRelay(t *testing.T) {
+	relay := relayServer(t, nil)
+	cfg := testConfig()
+	cfg.RelayURL = relay.URL
+	cfg.NoProxy = nil
+
+	e, err := NewEgress(cfg)
+	if err != nil {
+		t.Fatalf("NewEgress: %v", err)
+	}
+	defer e.Close()
+
+	resp, err := e.Do(context.Background(), http.MethodGet, "https://example.invalid/x", nil, nil)
+	if err != nil {
+		// A failure is fine here; the point is what MarkRefused does next.
+		e.MarkRefused("refused")
+	} else {
+		resp.Body.Close()
+		e.MarkRefused("refused")
+	}
+	if st := e.State(); st.Degraded {
+		t.Error("a single relay was parked, which would fail every later request locally")
 	}
 }
 

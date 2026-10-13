@@ -46,9 +46,13 @@ type Egress struct {
 
 	mu       sync.Mutex
 	next     int
-	relayIdx int
 	degraded map[string]time.Time
 	rnd      *rand.Rand
+	// lastRelay is the relay the most recent request went through, so a refusal
+	// reported after the fact can be attributed to the right one.
+	lastRelay *url.URL
+	// Log, when set, receives one line per egress decision.
+	Log func(format string, args ...any)
 }
 
 // degradedFor is how long a relay is skipped after a failure.
@@ -143,6 +147,9 @@ func (e *Egress) doRelay(ctx context.Context, method string, target *url.URL, hd
 	if err != nil {
 		return nil, err
 	}
+	e.mu.Lock()
+	e.lastRelay = relay
+	e.mu.Unlock()
 
 	// The relay is always addressed with the caller's method: it forwards it.
 	relayURL := *relay
@@ -301,7 +308,30 @@ func matchHostPattern(pattern, host string) bool {
 	return true
 }
 
-// State reports the health block. It never exposes a URL or a key.
+// MarkRefused parks the relay that carried a request the upstream refused.
+//
+// A risk-control refusal arrives as HTTP 200 with an error inside the body, not
+// as a transport failure, so the marking in doRelay never sees it. Without this,
+// a pool with several relays would keep sending every request through the one
+// the upstream is currently refusing — which is exactly the situation this
+// exists for.
+func (e *Egress) MarkRefused(reason string) {
+	e.mu.Lock()
+	relay := e.lastRelay
+	if e.mode != "relay" || relay == nil || len(e.relays) < 2 {
+		// With a single relay there is nowhere to move to, and parking it would
+		// only turn a clear upstream refusal into a local one.
+		e.mu.Unlock()
+		return
+	}
+	e.degraded[relay.Host] = time.Now().Add(degradedFor)
+	e.mu.Unlock()
+
+	if e.Log != nil {
+		e.Log("relay %s refused: %s (skipping it for %s)", relay.Host, reason, degradedFor)
+	}
+}
+
 func (e *Egress) State() egressHealth {
 	e.mu.Lock()
 	defer e.mu.Unlock()
