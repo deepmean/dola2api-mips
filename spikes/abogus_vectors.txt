@@ -1,0 +1,12 @@
+# a_bogus test vectors, captured from the live page's performance entries.
+# Each line is the full signed query the browser actually sent. The signature is
+# NOT a pure function of the query: the three captured queries are identical and
+# the a_bogus values differ, so it carries a timestamp or a random component.
+#
+# query (shared by all three, without a_bogus):
+aid=495671&device_id=7686671608228726325&device_platform=web&doubao_device_platform=web&doubao_pc_version=3.41.0&fp=verify_mv6q3fus_Oi5TeE8s_72in_4CGa_9k8g_RYDKyKyHA2UK&language=&pc_version=3.41.0&pkg_type=release_version&real_aid=495671&region=JP&samantha_web=1&sys_region=JP&tea_uuid=7695956629460485685&tz_name=Asia%2FShanghai&use-olympus-account=1&version_code=20800&web_id=7695956629460485685&web_platform=browser&web_tab_id=fd56c268-32f4-4d08-9a53-76fdd3444e88&msToken=dv2xYu6Je6tbLKIqSmo28GD2aptd4hqlD5zomPJCsnv8A-FPdh6Y2UAumq9fLnQk5bEQczsncq0LRdu-DQhm1PSCRqdcVU2I75xb1Oth16USZ77T7OpWOQ-7EN26RqHHN2zxfDdzd-Vlk-LTEdpBpO4sYSB_RPfS5HD86dFF
+#
+# a_bogus values observed for that query (URL-decoded lengths 188, 196, 192):
+OJUfDFSiOpRVCdMbuOkD95H51zWMNT8yKliOWSn5CFuPLXMbxvpvUE4laOLWIhL33bksNKo7tjA8anDPZRRW4ZIkFskkSuGRXt2IVW0LMqq3PFvsDq8segszuwBYlRsLl5djEeR5Xs0Lgd5l9NoulxVay5FjmORpRqpbd2z9jDSU3PgT99/StcfA9qE=
+m6sRDt7yQo8bedMbuKs89v2590clNTSyK-iOWSn5CFKayHMbsXpJUt44cxO8jq0X1bkkNFAH7jlGbdjGpm5PV2opusZkSLifXG/VVWXLgqidaMvsgqgzeg0zFwBYMRGLe/djE9RRAs0ygEQlIroulxIG75FJmObpSrpfd2uyGDS0pPLTIoASCagq
+djUnktWiYqmRKVKbuCku9lA5DoRArP8yOMiOWSn5eFKOLHebfJBUGtzRjxO08Xm1HYsiNKQHCjlqTdfGp8R-V/KkqsZDuB4bJz/5VX0oZqqVaFJsLqgTe8szowBYlbsLa/dREeWRAs076dOlVNoElxIaH5FERQRpbqBydMz9JDSUpPgT9nd6eVwWsZD=
