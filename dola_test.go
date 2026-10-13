@@ -160,11 +160,11 @@ func TestUpstreamPollEndToEnd(t *testing.T) {
 	}
 	defer egress.Close()
 
-	client := NewUpstream(egress, "sessionid=abc")
+	client := NewUpstream(egress)
 	// Point the client at the fake server instead of the real host.
 	client.base = upstream.URL
 
-	result, err := client.Poll(context.Background(), "38418263229243665")
+	result, err := client.Poll(context.Background(), "sessionid=abc", "38418263229243665")
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
 	}
@@ -198,10 +198,10 @@ func TestUpstreamPollReportsUpstreamErrors(t *testing.T) {
 	}
 	defer egress.Close()
 
-	client := NewUpstream(egress, "sessionid=abc")
+	client := NewUpstream(egress)
 	client.base = upstream.URL
 
-	_, err = client.Poll(context.Background(), "conv-1")
+	_, err = client.Poll(context.Background(), "sessionid=abc", "conv-1")
 	if err == nil {
 		t.Fatal("a 403 was reported as success")
 	}
@@ -216,7 +216,7 @@ func TestUpstreamPollRejectsEmptyConversation(t *testing.T) {
 		t.Fatalf("NewEgress: %v", err)
 	}
 	defer egress.Close()
-	if _, err := NewUpstream(egress, "").Poll(context.Background(), ""); err == nil {
+	if _, err := NewUpstream(egress).Poll(context.Background(), "", ""); err == nil {
 		t.Error("an empty conversation id was accepted")
 	}
 }

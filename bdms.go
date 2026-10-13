@@ -104,6 +104,38 @@ func (s *BDMSSigner) XBogus(stub string) (string, error) {
 	return bdmsBase64(out), nil
 }
 
+// bdmsAlphabetLength is the number of usable symbols in the SDK alphabet.
+const bdmsAlphabetLength = 64
+
+// aBogusLength is the length of the a_bogus the page produces. Observed values
+// on the submit path are 184 to 197 characters, ending in "==".
+const aBogusLength = 184
+
+// PlaceholderABogus returns a shape-correct a_bogus with nothing behind it.
+//
+// Measured on the submit path: a submit with no a_bogus answers 710022004
+// (slide captcha), while a submit with any well-formed a_bogus answers
+// 710022002, and a garbage signature is indistinguishable from a valid one. So
+// the layer consulted first only checks that something of the right shape is
+// present, and this satisfies it without shipping a signer.
+//
+// The name says what it is. If a later layer turns out to validate the
+// signature, this function is the single place that has to be replaced — and
+// XBogus above is the working half of the same SDK, which is where a real
+// implementation would start.
+func PlaceholderABogus() (string, error) {
+	buf := make([]byte, aBogusLength-2)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("bdms: randomness unavailable: %w", err)
+	}
+	out := make([]byte, 0, aBogusLength)
+	for _, b := range buf {
+		out = append(out, bdmsAlphabet[b%bdmsAlphabetLength])
+	}
+	out = append(out, '=', '=')
+	return string(out), nil
+}
+
 // bdmsConstantPair is the two constant bytes the SDK derives from the empty
 // string: md5(md5(""))[14:16]. It is 69,63 on the live SDK.
 func bdmsConstantPair() (byte, byte) {

@@ -145,6 +145,17 @@ func main() {
 	srv.available = func() bool { return accounts.Available(time.Now()) }
 	srv.reloadError = accounts.LastError
 
+	upstream := NewUpstream(egress)
+	exec, err := NewExecutor(cfg, upstream)
+	if err != nil {
+		log.Fatalf("executor: %v", err)
+	}
+	poolCtx, stopPool := context.WithCancel(context.Background())
+	defer stopPool()
+	pool := NewPool(cfg, accounts, exec, upstream, log.New(os.Stderr, "pool: ", log.LstdFlags))
+	pool.Start(poolCtx)
+	srv.pendingTasks = pool.Pending
+
 	raw, err := net.Listen("tcp", cfg.Addr())
 	if err != nil {
 		log.Fatalf("listen %s: %v", cfg.Addr(), err)
@@ -177,6 +188,10 @@ func main() {
 				log.Printf("SIGHUP: reloaded %d session(s) from %s", len(accounts.Cookies()), cfg.AccountsFile)
 			default:
 				log.Printf("%s received; shutting down", sig)
+				// Stop the pool first so no new upstream work starts, then let
+				// in-flight HTTP responses finish.
+				stopPool()
+				pool.Close()
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				if err := httpSrv.Shutdown(ctx); err != nil {

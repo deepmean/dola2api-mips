@@ -48,6 +48,12 @@ type Config struct {
 	FirstByteTimeout time.Duration
 	SubmitDeadline   time.Duration
 
+	// PollInterval is how often a running task asks for its video.
+	PollInterval time.Duration
+	// TaskTTL is how long a finished task stays readable before it is dropped,
+	// which bounds the task map.
+	TaskTTL time.Duration
+
 	StoreMode      string // redirect | pipe | mirror
 	MirrorMaxBytes int64
 	MirrorTTL      time.Duration
@@ -94,6 +100,8 @@ const (
 	defaultRelayURL        = "https://vcrelay.dmean.dpdns.org/"
 	defaultNoProxy         = "*.volces.com,*.byteimg.com,127.0.0.1,192.168.*"
 	defaultEgressRotate    = "none"
+	defaultPollInterval    = 10 * time.Second
+	defaultTaskTTL         = 30 * time.Minute
 	defaultRelayMaxBody    = 4 << 20
 	defaultFirstByte       = 20 * time.Second
 	defaultSubmitDeadline  = 30 * time.Second
@@ -225,6 +233,15 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.SubmitDeadline, err = envDuration(getenv, "DOLA_SUBMIT_DEADLINE", defaultSubmitDeadline); err != nil {
+		return Config{}, err
+	}
+	if cfg.PollInterval, err = envDuration(getenv, "DOLA_POLL_INTERVAL", defaultPollInterval); err != nil {
+		return Config{}, err
+	}
+	if cfg.PollInterval <= 0 {
+		return Config{}, fmt.Errorf("DOLA_POLL_INTERVAL must be positive, got %s", cfg.PollInterval)
+	}
+	if cfg.TaskTTL, err = envDuration(getenv, "DOLA_TASK_TTL", defaultTaskTTL); err != nil {
 		return Config{}, err
 	}
 
