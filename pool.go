@@ -50,7 +50,7 @@ var ErrPoolClosed = errors.New("pool: closed")
 //
 // The concurrency bound is deliberate rather than incidental: the target router
 // has 250MB of RAM and the upstream rate-limits anyway, so a second worker buys
-// nothing and costs memory. The pending bound exists for the same reason 閳?a
+// nothing and costs memory. The pending bound exists for the same reason 闁?a
 // queue that grows without limit is a way to run out of memory from the outside.
 type Pool struct {
 	cfg      Config
@@ -65,8 +65,10 @@ type Pool struct {
 	running int
 	closed  bool
 	nextSeq uint64
-	wake    chan struct{}
-	done    chan struct{}
+	// lastSubmit is when the previous submit went out, for pacing.
+	lastSubmit time.Time
+	wake       chan struct{}
+	done       chan struct{}
 }
 
 // NewPool builds a pool. Call Start to run it.
@@ -279,6 +281,10 @@ func (p *Pool) run(ctx context.Context, task *Task) {
 			return
 		}
 
+		// Space submits out. The upstream refuses them by rate rather than by
+		// session, so sending them back to back is what triggers the refusal.
+		p.pace(ctx)
+
 		// The submit and the polling each get their own deadline: a submit that
 		// hangs must not eat the time budget for waiting on the result.
 		submitCtx, cancelSubmit := context.WithTimeout(ctx, p.cfg.SubmitDeadline)
@@ -293,6 +299,16 @@ func (p *Pool) run(ctx context.Context, task *Task) {
 		p.accounts.RecordFailure(candidate, time.Now(), err)
 		p.logger.Printf("task %s: attempt %d/%d with %q failed: %v",
 			task.ID, attempt, attempts, candidate.Label, err)
+
+		// A rate-limit refusal is about how fast submits are arriving, so
+		// another session would spend the same budget to get the same answer.
+		// Measured: one submit succeeded and the next three were refused, and
+		// the failover then burned three more before giving up.
+		if errors.Is(err, ErrUpstreamRateLimited) {
+			p.fail(task, fmt.Errorf("%w (tried %d session(s); the refusal is about submit rate, so another session would not help)",
+				err, attempt))
+			return
+		}
 	}
 	if lastErr != nil {
 		p.fail(task, lastErr)
@@ -352,6 +368,41 @@ func (p *Pool) awaitMedia(ctx context.Context, cookie, conversationID string) ([
 	}
 }
 
+// pace waits until enough time has passed since the last submit.
+//
+// The upstream's refusal is about submit rate: measured, the first submit of a
+// session is accepted and the ones immediately after are refused, across every
+// account. Spacing them out is the only lever the port has, and with a single
+// worker it costs nothing but patience.
+func (p *Pool) pace(ctx context.Context) {
+	if p.cfg.SubmitInterval <= 0 {
+		return
+	}
+	now := time.Now()
+	p.mu.Lock()
+	// Reserve the next slot rather than recording the moment we arrived. Adding
+	// the wait to now would be wrong on the first call, where lastSubmit is the
+	// zero time: the subtraction would stay negative and the pacer would never
+	// wait at all.
+	next := p.lastSubmit.Add(p.cfg.SubmitInterval)
+	if next.Before(now) {
+		next = now
+	}
+	p.lastSubmit = next
+	p.mu.Unlock()
+
+	wait := next.Sub(now)
+	if wait <= 0 {
+		return
+	}
+	p.logger.Printf("pacing: waiting %s before the next submit", wait.Round(time.Second))
+	select {
+	case <-ctx.Done():
+	case <-time.After(wait):
+	}
+}
+
+// fail records a task's failure.
 func (p *Pool) fail(task *Task, err error) {
 	p.mu.Lock()
 	task.State = TaskFailed

@@ -35,6 +35,9 @@ type Config struct {
 	// SubmitAttempts bounds how many sessions one task may try before it is
 	// reported as failed. 1 disables failover.
 	SubmitAttempts int
+	// SubmitInterval is the minimum gap between submits. The upstream refuses by
+	// submit rate rather than by session, so this is the lever that matters.
+	SubmitInterval time.Duration
 	// ResetTZ is a fixed-offset location. OpenWrt ships no tzdata, so a named
 	// zone that is not in the table below is a configuration error rather than
 	// a silent fallback to UTC (the exact bug that shifted "today" by 8h in
@@ -131,6 +134,8 @@ const (
 	defaultCooldownSec     = 1800
 	defaultAccountStrategy = "least-used"
 	defaultSubmitAttempts  = 3
+	// defaultSubmitInterval spaces submits out; see SubmitInterval.
+	defaultSubmitInterval  = 20 * time.Second
 	defaultResetTZ         = "Asia/Tokyo"
 	defaultVideoTimeout    = 300 * time.Second
 	defaultRefVideoTimeout = 1800 * time.Second
@@ -242,6 +247,9 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	if cfg.SubmitAttempts < 1 {
 		return Config{}, fmt.Errorf("DOLA_SUBMIT_ATTEMPTS must be >= 1, got %d", cfg.SubmitAttempts)
+	}
+	if cfg.SubmitInterval, err = envDuration(getenv, "DOLA_SUBMIT_INTERVAL", defaultSubmitInterval); err != nil {
+		return Config{}, err
 	}
 	if cfg.ResetTZ, err = parseFixedZone(envOr(getenv, "DOLA_LIMIT_RESET_TZ", defaultResetTZ)); err != nil {
 		return Config{}, err

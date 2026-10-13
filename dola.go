@@ -730,6 +730,23 @@ func readAck(r *bufio.Reader) (string, error) {
 	}
 }
 
+// ErrUpstreamRateLimited marks a submit refusal that is about the path rather
+// than the account.
+//
+// Measured: the first submit of a session is accepted and the ones that follow
+// are refused with 710022002 or 710022004, across every account and after a
+// quiet period. That makes these codes a statement about how fast submits are
+// arriving, not about which session is asking — so retrying with another account
+// spends the budget faster instead of helping.
+var ErrUpstreamRateLimited = errors.New("upstream rate limited")
+
+// rateLimitedCodes are the refusals that mean "too many submits", not "this
+// session is broken".
+var rateLimitedCodes = map[string]bool{
+	"710022002": true, // 目前服務使用人數較多 — high demand
+	"710022004": true, // shark_admin slide challenge
+}
+
 // handleEvent reports whether the event ends the read, and why.
 func handleEvent(event, data string) (conversationID string, stop bool, err error) {
 	switch event {
@@ -749,8 +766,11 @@ func handleEvent(event, data string) (conversationID string, stop bool, err erro
 			ErrorMsg  string `json:"error_msg"`
 		}
 		if json.Unmarshal([]byte(data), &failure) == nil {
-			return "", true, fmt.Errorf("upstream refused: %s %s",
-				formatErrorCode(failure.ErrorCode), failure.ErrorMsg)
+			code := formatErrorCode(failure.ErrorCode)
+			if rateLimitedCodes[code] {
+				return "", true, fmt.Errorf("%w: %s %s", ErrUpstreamRateLimited, code, failure.ErrorMsg)
+			}
+			return "", true, fmt.Errorf("upstream refused: %s %s", code, failure.ErrorMsg)
 		}
 		return "", true, errors.New("upstream refused with an unreadable error")
 	}
