@@ -78,16 +78,38 @@ CI 还带三条门禁：
 
 内存是主预算，flash 只是记录项：
 
-| 指标 | 目标 |
-| --- | --- |
-| 稳态 RSS（空闲） | ≤ 12MB |
-| 峰值 RSS（1 个在飞任务 + 4MB 参考图） | ≤ 32MB |
-| 二进制体积（防膨胀门禁） | ≤ 9MB |
-| 稳态 `MemAvailable` 下降 | ≤ 15MB |
+| 指标 | 目标 | **真机实测** |
+| --- | --- | --- |
+| 稳态 RSS（空闲） | ≤ 12MB | **7.9MB**（anon 1.2MB，其余为可回收的代码页） |
+| 峰值 RSS（1 个在飞任务 + 4MB 参考图） | ≤ 32MB | 提交实测 **9.6MB** |
+| 二进制体积（防膨胀门禁） | ≤ 9MB | 7.88MB |
+| 稳态 `MemAvailable` 下降 | ≤ 15MB | 设备 `available` 从 63.5MB → 55.5MB（含其他服务波动） |
 
 OOM 自保：`DOLA_HEAP_SOFT_LIMIT`（默认 32MiB）在大分配前检查 `HeapAlloc`，
 超限让**当前任务**以 `507` 失败，而不是让内核 OOM killer 去杀别的进程。
 每个任务结束调一次 `debug.FreeOSMemory()` 把堆还给内核。
+
+## 真机验收
+
+在目标设备（JCG-Q20 / OpenWrt 24.10.5 / ramips-mt7621 / mipsel_24kc）上实测通过：
+
+| 项 | 结果 |
+| --- | --- |
+| 二进制在设备上执行 | ✅ softfloat 构建正常启动、正常报错、正常服务 |
+| procd 服务 | ✅ `enabled`，监听 `8790`，优雅停机 |
+| `/health` 免鉴权 | ✅ |
+| 无 key / 错误 key 访问 `/v1/*` | ✅ 401 |
+| **普通 API key 访问 `/admin/*`** | ✅ **401**（设计的安全属性） |
+| admin key 访问 `/admin/*` | ✅ 200 全量状态 |
+| 请求校验（空 prompt） | ✅ 400 + 明确原因 |
+| **真实提交全链路** | ✅ 202 受理 → 任务结算（鉴权→校验→池→**出口层 relay**→上游） |
+| 账号冷却 | ✅ 提交失败后 `available:false`、`cooldown_remaining:737` |
+
+**唯一未通的是上游签名门槛**：提交被上游以 `710022002`（服务限流）拒绝——
+该错误**浏览器自己也会遇到**，详见 [`spikes/RESULT.md`](spikes/RESULT.md)。
+
+部署与验收脚本在 [`deploy/`](deploy/)：`router-setup.sh`（就地生成密钥）、
+`router-update.sh`（原子替换 + 自动回滚）、`router-footprint.sh`、`router-acceptance.sh`。
 
 ## 部署
 
