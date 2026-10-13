@@ -72,6 +72,17 @@ type Config struct {
 	// not something this project can pin down from the outside.
 	VideoModels []string
 
+	// ChatTimeout bounds one text turn. Chat does not go through the task pool,
+	// so it needs its own deadline rather than the video one.
+	ChatTimeout time.Duration
+	// ChatConcurrency bounds simultaneous text turns, separately from
+	// MaxConcurrency, which governs generation jobs.
+	ChatConcurrency int
+	// DeepThinkValue is the wire value for a reasoning request. It is a setting
+	// because the value is uncertain: the upstream Python uses 1 and a
+	// third-party client uses 3, and neither could be confirmed here.
+	DeepThinkValue int
+
 	// ImageAbility is the skill type used for image requests. It is
 	// configurable because the value is evidence-based rather than confirmed
 	// end to end: the upstream's skill table reports 3 as image generation, and
@@ -144,13 +155,22 @@ const (
 	// defaultSessionWarnDays is a week: long enough to replace a cookie without
 	// rushing, short enough that the reminder is not routine noise.
 	defaultSessionWarnDays = 7
-	defaultMirrorMaxBytes  = 32 << 20
-	defaultMirrorTTLHours  = 24
-	defaultRefImageBytes   = 4 << 20
-	defaultRefImageCount   = 30
-	defaultHeapSoftLimit   = 32 << 20
-	defaultMaxConnections  = 32
-	defaultMaxHeaderBytes  = 32 << 10
+	// defaultChatTimeout is short because a chat client is waiting and has its
+	// own timeout, usually a minute or two.
+	defaultChatTimeout = 60 * time.Second
+	// defaultChatConcurrency is separate from MaxConcurrency: chat holds no task
+	// slot, so a slow turn cannot block a generation.
+	defaultChatConcurrency = 2
+	// defaultDeepThinkValue is the value the upstream Python sends for a
+	// reasoning request.
+	defaultDeepThinkValue = 1
+	defaultMirrorMaxBytes = 32 << 20
+	defaultMirrorTTLHours = 24
+	defaultRefImageBytes  = 4 << 20
+	defaultRefImageCount  = 30
+	defaultHeapSoftLimit  = 32 << 20
+	defaultMaxConnections = 32
+	defaultMaxHeaderBytes = 32 << 10
 )
 
 // fixedZoneMinutes maps the timezone names an operator may plausibly set to
@@ -321,6 +341,21 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	if cfg.ImageAbility < 0 {
 		return Config{}, fmt.Errorf("DOLA_IMAGE_ABILITY must be >= 0, got %d", cfg.ImageAbility)
+	}
+	if cfg.ChatTimeout, err = envDuration(getenv, "DOLA_CHAT_TIMEOUT", defaultChatTimeout); err != nil {
+		return Config{}, err
+	}
+	if cfg.ChatTimeout <= 0 {
+		return Config{}, fmt.Errorf("DOLA_CHAT_TIMEOUT must be positive, got %s", cfg.ChatTimeout)
+	}
+	if cfg.ChatConcurrency, err = envInt(getenv, "DOLA_CHAT_CONCURRENCY", defaultChatConcurrency); err != nil {
+		return Config{}, err
+	}
+	if cfg.ChatConcurrency < 1 {
+		return Config{}, fmt.Errorf("DOLA_CHAT_CONCURRENCY must be >= 1, got %d", cfg.ChatConcurrency)
+	}
+	if cfg.DeepThinkValue, err = envInt(getenv, "DOLA_DEEP_THINK_VALUE", defaultDeepThinkValue); err != nil {
+		return Config{}, err
 	}
 
 	cfg.VideoModels = envList(getenv, "DOLA_VIDEO_MODELS")

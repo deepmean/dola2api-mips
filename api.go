@@ -121,19 +121,21 @@ func constantTimeEquals(a, b string) bool {
 
 // api bundles the handlers' dependencies.
 type api struct {
-	cfg         Config
-	guard       *Guard
-	auth        *authenticator
-	pool        *Pool
-	retriever   *Retriever
-	accounts    *AccountStore
+	cfg       Config
+	guard     *Guard
+	auth      *authenticator
+	pool      *Pool
+	retriever *Retriever
+	accounts  *AccountStore
+	// chatSlots bounds simultaneous text turns, separately from the pool's bound.
+	chatSlots   chan struct{}
 	upstream    *Upstream
 	egressState func() egressHealth
 }
 
 func newAPI(cfg Config, guard *Guard, pool *Pool, retriever *Retriever,
 	accounts *AccountStore, upstream *Upstream, egressState func() egressHealth) *api {
-	return &api{
+	api := &api{
 		cfg:         cfg,
 		guard:       guard,
 		auth:        newAuthenticator(cfg),
@@ -143,6 +145,12 @@ func newAPI(cfg Config, guard *Guard, pool *Pool, retriever *Retriever,
 		upstream:    upstream,
 		egressState: egressState,
 	}
+	slots := cfg.ChatConcurrency
+	if slots < 1 {
+		slots = defaultChatConcurrency
+	}
+	api.chatSlots = make(chan struct{}, slots)
+	return api
 }
 
 // register adds the API routes to mux.

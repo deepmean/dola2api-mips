@@ -225,6 +225,9 @@ const (
 	creationTypeVideo = 2
 )
 
+// blockTypeThinking carries a reasoning block.
+const blockTypeThinking = 10040
+
 // extractPoll pulls the text and the generated media out of a poll response.
 func extractPoll(conversationID string, raw []byte) (PollResult, error) {
 	var parsed pollResponse
@@ -377,7 +380,7 @@ func newUUID() string {
 //
 // It reads the recent-conversation list: a small authenticated call that needs
 // no signature, and the same one the standalone probe uses. This is what makes
-// pasting a cookie into the panel useful rather than a guess 闁?a dead session
+// pasting a cookie into the panel useful rather than a guess 闂?a dead session
 // would otherwise only surface later, as an account parked by the cooldown with
 // an upstream error that looks like a rate limit.
 func (u *Upstream) VerifySession(ctx context.Context, cookie string) error {
@@ -511,7 +514,7 @@ const (
 	skillVideo = 17
 	// skillImage is image generation. The upstream Python used 16, which is
 	// SkillCodeAssistant: /samantha/skill/pack answers 710010702 for 16 and 0
-	// for 3, and the skill table reports 3 as "闁革附鐗滄晶鏍偨閻旂鐏?. That Python branch had
+	// for 3, and the skill table reports 3 as "闂侀潻闄勯悧婊勬櫠閺嶎厽鍋ㄩ柣鏃傤焾閻?. That Python branch had
 	// no callers, so it was never validated.
 	skillImage = 3
 )
@@ -521,7 +524,7 @@ const (
 // This is the single most important detail of the submit: the agent reads the
 // prompt to decide what to produce. The client sends
 // "Generate video: <prompt>, <ratio>", and a request that says anything else
-// comes back as a batch of images 闁?which is exactly what happened here, and
+// comes back as a batch of images 闂?which is exactly what happened here, and
 // looked for a long time like a broken poll rather than a wrong prompt.
 func wirePrompt(req SubmitRequest) string {
 	if req.Kind == "image" {
@@ -608,7 +611,7 @@ const maxSubmitBody = 256 << 10
 //
 // It deliberately carries no a_bogus. Measured on the live endpoint: a submit
 // with no a_bogus at all is accepted and acknowledged, while one carrying a
-// well-formed but meaningless a_bogus is refused with 710022002 闁?the same code
+// well-formed but meaningless a_bogus is refused with 710022002 闂?the same code
 // a genuinely invalid signature gets. So the parameter is only validated when it
 // is present, and sending a placeholder is worse than sending nothing.
 //

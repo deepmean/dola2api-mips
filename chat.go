@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// chatRequest is the OpenAI chat body, of which only the model and the last user
+// chatRequest is the OpenAI chat body, of which the model and the last user
 // message matter here.
 type chatRequest struct {
 	Model    string `json:"model"`
@@ -24,11 +24,7 @@ type chatRequest struct {
 	Stream bool `json:"stream"`
 }
 
-// chatResponse is an OpenAI-shaped completion with the video task attached.
-//
-// The shape matters more than it looks: an existing client will not be changed
-// to speak a bespoke protocol, so the adapter speaks its protocol and carries
-// this service's own fields alongside.
+// chatResponse is an OpenAI-shaped completion carrying the reply text.
 type chatResponse struct {
 	ID      string `json:"id"`
 	Object  string `json:"object"`
@@ -42,30 +38,28 @@ type chatResponse struct {
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage     map[string]int `json:"usage"`
-	VideoTask *apiTask       `json:"video_task,omitempty"`
+	Usage map[string]int `json:"usage"`
+	// ConversationID is this service's own addition; an OpenAI client ignores it
+	// and an operator finds it useful when a reply looks wrong.
+	ConversationID string `json:"conversation_id,omitempty"`
+	// Events and SampleFrames are diagnostics for the case that matters most:
+	// a tolerant extractor that still finds nothing yields an empty reply that
+	// is indistinguishable from a working service answering nothing.
+	Events       int      `json:"events,omitempty"`
+	SampleFrames []string `json:"sample_frames,omitempty"`
 }
 
-// chatWaitBudget bounds how long a chat request waits for the video.
-//
-// A chat client expects an answer promptly and has its own timeout, usually a
-// minute or two. Waiting longer would trade a useful "still working" answer for
-// a client-side timeout, so the request returns the task either way and the
-// client can poll it.
-const chatWaitBudget = 60 * time.Second
-
-// registerChat adds the chat-completions adapter.
+// registerChat adds the chat-completions endpoint.
 func (a *api) registerChat(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/chat/completions", a.withAuth(a.handleChatCompletions))
 }
 
-// handleChatCompletions maps a conversation onto one video request.
+// handleChatCompletions runs one text turn.
 //
-// This service generates video, not text, so the mapping is deliberately plain:
-// the last user message becomes the prompt, and the answer says what happened.
-// Returning the task rather than blocking forever is the honest shape for an
-// asynchronous backend 閳?a chat client that shows "still working, poll here" is
-// more useful than one that times out with nothing.
+// This does not go through the Pool. Chat needs no task record, no polling and
+// no media store, and with one worker and a ten-minute video timeout a chat
+// queued behind a video would look like a hang rather than a queue. It gets its
+// own concurrency bound and its own deadline instead.
 func (a *api) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxAPIRequestBytes))
 	if err != nil {
@@ -78,10 +72,14 @@ func (a *api) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Stream {
-		// Streaming is not implemented. Saying so beats sending a body that a
-		// client will try to parse as SSE and give up on.
+		// Streaming is not implemented. Saying so beats sending a body a client
+		// will try to parse as SSE and give up on.
 		writeError(w, http.StatusNotImplemented,
 			"streaming is not supported; send stream=false", "no_streaming")
+		return
+	}
+	if a.upstream == nil || a.accounts == nil {
+		writeError(w, http.StatusServiceUnavailable, "chat is not configured", "no_upstream")
 		return
 	}
 
@@ -90,37 +88,62 @@ func (a *api) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request")
 		return
 	}
+	if len(prompt) > 4000 {
+		writeError(w, http.StatusBadRequest, "prompt is too long (4000 characters maximum)", "invalid_request")
+		return
+	}
 
-	submit, err := a.validate(apiRequest{Prompt: prompt, Model: req.Model}, "video")
+	// Its own bound, so a slow turn cannot occupy the whole service.
+	select {
+	case a.chatSlots <- struct{}{}:
+		defer func() { <-a.chatSlots }()
+	default:
+		w.Header().Set("Retry-After", "10")
+		writeError(w, http.StatusTooManyRequests,
+			"too many chat requests in flight", "chat_busy")
+		return
+	}
+
+	account, err := a.accounts.Pick(time.Now())
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error(), "invalid_request")
+		writeError(w, http.StatusServiceUnavailable, "no session available: "+err.Error(), "no_session")
 		return
 	}
 
-	task, err := a.pool.Submit(submit)
-	switch {
-	case errors.Is(err, ErrPoolFull):
-		writeError(w, http.StatusTooManyRequests, err.Error(), "pool_full")
-		return
-	case errors.Is(err, ErrPoolClosed):
-		writeError(w, http.StatusServiceUnavailable, err.Error(), "shutting_down")
-		return
-	case err != nil:
-		writeError(w, http.StatusInternalServerError, err.Error(), "submit_failed")
+	ctx, cancel := context.WithTimeout(r.Context(), a.cfg.ChatTimeout)
+	defer cancel()
+
+	result, err := a.upstream.Chat(ctx, account.Cookie, ChatRequest{Prompt: prompt}, a.cfg.DeepThinkValue)
+	if err != nil {
+		// A refusal or a transport failure is the account's problem as much as
+		// the request's, so it is parked like a failed submit would be.
+		a.accounts.RecordFailure(account, time.Now(), err)
+		writeError(w, http.StatusBadGateway, err.Error(), "chat_failed")
 		return
 	}
+	a.accounts.RecordSuccess(account, time.Now())
 
-	// Wait briefly so a client that just wants the answer often gets it.
-	settled := a.awaitTask(r.Context(), task.ID, chatWaitBudget)
+	content := result.Reply
+	if content == "" {
+		// Do not report an empty answer as success: it is the signature of an
+		// extractor that no longer matches the stream.
+		content = fmt.Sprintf("The upstream returned no text (%d frame(s)). Raw frames are in sample_frames.",
+			result.Events)
+	}
 
-	content := describeTask(settled, submit)
 	resp := chatResponse{
-		ID:      "chatcmpl-" + settled.ID,
-		Object:  "chat.completion",
-		Created: time.Now().Unix(),
-		Model:   submit.Model,
-		Usage: map[string]int{"prompt_tokens": len(submit.Prompt) / 4, "completion_tokens": len(content) / 4,
-			"total_tokens": (len(submit.Prompt) + len(content)) / 4},
+		ID:             "chatcmpl-" + newUUID(),
+		Object:         "chat.completion",
+		Created:        time.Now().Unix(),
+		Model:          req.Model,
+		ConversationID: result.ConversationID,
+		Events:         result.Events,
+		SampleFrames:   result.SampleFrames,
+		Usage: map[string]int{
+			"prompt_tokens":     len(prompt) / 4,
+			"completion_tokens": len(content) / 4,
+			"total_tokens":      (len(prompt) + len(content)) / 4,
+		},
 	}
 	resp.Choices = make([]struct {
 		Index   int `json:"index"`
@@ -134,50 +157,8 @@ func (a *api) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	resp.Choices[0].Message.Role = "assistant"
 	resp.Choices[0].Message.Content = content
 	resp.Choices[0].FinishReason = "stop"
-	snapshot := a.toAPITask(settled)
-	resp.VideoTask = &snapshot
 
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// awaitTask waits for a task to settle, or returns it as it stands.
-func (a *api) awaitTask(ctx context.Context, id string, budget time.Duration) Task {
-	deadline := time.Now().Add(budget)
-	for {
-		task, ok := a.pool.Get(id)
-		if !ok {
-			return Task{ID: id, State: TaskFailed, Error: "the task disappeared"}
-		}
-		if task.State == TaskSucceeded || task.State == TaskFailed {
-			return task
-		}
-		if time.Now().After(deadline) {
-			return task
-		}
-		select {
-		case <-ctx.Done():
-			return task
-		case <-time.After(500 * time.Millisecond):
-		}
-	}
-}
-
-// describeTask is what the client shows its user.
-func describeTask(task Task, req SubmitRequest) string {
-	switch task.State {
-	case TaskSucceeded:
-		if len(task.Media) > 0 {
-			url := bestURL(task.Media[0])
-			return fmt.Sprintf("Video ready (%s, %ds).\n\n%s\n\nPoll: GET /v1/videos/%s",
-				req.Model, req.Duration, url, task.ID)
-		}
-		return fmt.Sprintf("The task finished but produced no video. Poll: GET /v1/videos/%s", task.ID)
-	case TaskFailed:
-		return fmt.Sprintf("Video generation failed: %s\n\nTask: GET /v1/videos/%s", task.Error, task.ID)
-	default:
-		return fmt.Sprintf("Video generation is running (%s, %ds).\n\nPoll: GET /v1/videos/%s\nDownload: GET /v1/videos/%s/content",
-			req.Model, req.Duration, task.ID, task.ID)
-	}
 }
 
 // lastUserText extracts the prompt from the last user message.

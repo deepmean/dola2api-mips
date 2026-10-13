@@ -26,7 +26,7 @@ Dola Render Gateway 的 MIPS32 移植版：把 `coll3879xx-cyber/dola-render-gat
 | --- | --- | --- |
 | POST | `/v1/videos` | `{prompt,ratio?,model?,duration?}` → `202 {id,state,media[]}` |
 | POST | `/v1/images` | 同上；`{prompt,ratio?,style?}`，产出图片而非视频 |
-| POST | `/v1/chat/completions` | OpenAI 形状的适配器：把对话映射成一次生成，返回任务信息 |
+| POST | `/v1/chat/completions` | 文本对话（OpenAI 形状）。**不走任务队列**，自带并发与超时 |
 | GET | `/v1/models` | 本服务支持的模型（`DOLA_VIDEO_MODELS` 可改） |
 | GET | `/v1/videos/{id}` | 任务状态；`state ∈ pending/running/succeeded/failed` |
 | GET | `/v1/videos/{id}/content` | 按 `DOLA_STORE_MODE` 交付（默认 302 到 CDN） |
