@@ -287,7 +287,7 @@ func TestSubmitURLCarriesNoSignature(t *testing.T) {
 	defer egress.Close()
 
 	u := NewUpstream(egress)
-	target := u.submitURL()
+	target := u.submitURL("sessionid=x")
 
 	if strings.Contains(target, "a_bogus") {
 		t.Errorf("the submit URL carries a_bogus, which the upstream refuses: %s", target)
@@ -296,6 +296,39 @@ func TestSubmitURLCarriesNoSignature(t *testing.T) {
 		if !strings.Contains(target, want) {
 			t.Errorf("the submit URL is missing %q: %s", want, target)
 		}
+	}
+}
+
+// msToken and fp come from the session, and the write paths must carry them the
+// way the read path always has. A session that can be read but never writes is
+// what a missing msToken looks like, and the verifier flagged it as higher
+// captcha risk from the first run.
+func TestWritePathsCarrySessionTokens(t *testing.T) {
+	egress, err := NewEgress(Config{EgressMode: "direct"})
+	if err != nil {
+		t.Fatalf("NewEgress: %v", err)
+	}
+	defer egress.Close()
+
+	u := NewUpstream(egress)
+	const cookie = "sessionid=x; msToken=TOKEN-VALUE; s_v_web_id=verify_abc"
+
+	for name, target := range map[string]string{
+		"submit": u.submitURL(cookie),
+		"chat":   u.submitURL(cookie),
+	} {
+		if !strings.Contains(target, "msToken=TOKEN-VALUE") {
+			t.Errorf("the %s URL does not carry msToken: %s", name, target)
+		}
+		if !strings.Contains(target, "fp=verify_abc") {
+			t.Errorf("the %s URL does not carry fp: %s", name, target)
+		}
+	}
+
+	// A session without them must not invent empty ones.
+	bare := u.submitURL("sessionid=x")
+	if strings.Contains(bare, "msToken=") || strings.Contains(bare, "fp=") {
+		t.Errorf("an empty token was sent: %s", bare)
 	}
 }
 

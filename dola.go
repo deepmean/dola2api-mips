@@ -514,7 +514,7 @@ const (
 	skillVideo = 17
 	// skillImage is image generation. The upstream Python used 16, which is
 	// SkillCodeAssistant: /samantha/skill/pack answers 710010702 for 16 and 0
-	// for 3, and the skill table reports 3 as "闂備線娼婚梽鍕偋濠婂嫭娅犻柡宥庡幗閸嬨劑鏌ｉ弮鍌ょ劸闁?. That Python branch had
+	// for 3, and the skill table reports 3 as "闂傚倷绶氬濠氭⒔閸曨垱鍋嬫繝濠傚濞呯娀鏌″搴″箺闁稿鍔戦弻锝夊籍閸屻倗鍔搁梺?. That Python branch had
 	// no callers, so it was never validated.
 	skillImage = 3
 )
@@ -585,7 +585,7 @@ func (u *Upstream) Submit(ctx context.Context, cookie string, req SubmitRequest)
 	hdr.Set("Accept", "*/*")
 	hdr.Set("Cookie", cookie)
 
-	resp, err := u.egress.Do(ctx, http.MethodPost, u.submitURL(), hdr, body)
+	resp, err := u.egress.Do(ctx, http.MethodPost, u.submitURL(cookie), hdr, body)
 	if err != nil {
 		return "", fmt.Errorf("submit: %w", err)
 	}
@@ -623,17 +623,13 @@ const maxSubmitBody = 256 << 10
 // satisfy it is to omit it. An earlier reading of the same measurements
 // concluded the opposite, because a service-side throttle was in force at the
 // time and made every variant fail differently.
-func (u *Upstream) submitURL() string {
-	params := url.Values{}
-	for k, v := range map[string]string{
-		"aid": "495671", "channel": "g", "device_platform": "web",
-		"language": "zh-Hant", "region": "JP", "sys_region": "JP",
-		"samantha_web": "1", "use-olympus-account": "1", "version_code": "20800",
-		"web_platform": "browser", "web_tab_id": u.tabID,
-	} {
-		params.Set(k, v)
-	}
-	return u.base + "/chat/completion?" + params.Encode()
+func (u *Upstream) submitURL(cookie string) string {
+	// sessionQuery, not a hand-written map: it carries msToken and fp when the
+	// session has them, which the read path always did and this one did not.
+	// That is exactly the shape of a session that can be read but never writes,
+	// and the verifier flagged the missing msToken as higher captcha risk from
+	// the first run.
+	return u.base + "/chat/completion?" + sessionQuery(u.tabID, cookie).Encode()
 }
 
 // buildSubmitBody renders the request the page sends for a video generation.
@@ -734,12 +730,12 @@ func readAck(r *bufio.Reader) (string, error) {
 // generate right now" codes.
 //
 // The name says rate, and the first reading of the evidence was that it was
-// about submit rate 鈥?the failover burned three submits in a row and all three
+// about submit rate 閳?the failover burned three submits in a row and all three
 // were refused. Polling the one conversation that a submit did create showed
-// what is actually happening: the reply is 浠婂ぉ鐨勭敓鎴愭鏁稿凡缍撻仈鍒颁笂闄愶紝鏄庡ぉ鍐嶄締鍏嶈不鐢熸垚鍚?
+// what is actually happening: the reply is 娴犲﹤銇夐惃鍕晸閹存劖顐奸弫绋垮嚒缂嶆捇浠堥崚棰佺瑐闂勬劧绱濋弰搴°亯閸愬秳绶犻崗宥堜笉閻㈢喐鍨氶崥?
 // the account's daily generation allowance is spent. That makes the codes a
-// per-account condition after all 鈥?one session passed the submit layer while
-// three others were refused in the same minute 鈥?so failing over is the right
+// per-account condition after all 閳?one session passed the submit layer while
+// three others were refused in the same minute 閳?so failing over is the right
 // response and is left in place.
 //
 // The codes are still classified, because the distinction is worth reporting:
@@ -750,7 +746,7 @@ var ErrUpstreamRateLimited = errors.New("upstream will not generate right now")
 
 // quotaCodes are the refusals that mean "not now, for this session".
 var quotaCodes = map[string]bool{
-	"710022002": true, // 鐩墠鏈嶅嫏浣跨敤浜烘暩杓冨 鈥?high demand
+	"710022002": true, // 閻╊喖澧犻張宥呭珡娴ｈ法鏁ゆ禍鐑樻毄鏉撳啫顦?閳?high demand
 	"710022004": true, // shark_admin challenge, also returned once the daily allowance is spent
 }
 

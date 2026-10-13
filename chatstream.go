@@ -62,7 +62,7 @@ func (u *Upstream) Chat(ctx context.Context, cookie string, req ChatRequest, dee
 	hdr.Set("Accept", "text/event-stream")
 	hdr.Set("Cookie", cookie)
 
-	resp, err := u.egress.Do(ctx, http.MethodPost, u.chatURL(), hdr, body)
+	resp, err := u.egress.Do(ctx, http.MethodPost, u.submitURL(cookie), hdr, body)
 	if err != nil {
 		return ChatResult{}, fmt.Errorf("chat: %w", err)
 	}
@@ -75,12 +75,8 @@ func (u *Upstream) Chat(ctx context.Context, cookie string, req ChatRequest, dee
 	return readChatStream(bufio.NewReaderSize(io.LimitReader(resp.Body, maxChatStream), 8<<10))
 }
 
-// chatURL is the submit URL for a chat turn.
-//
-// It carries no a_bogus, for the same measured reason the video submit does not.
-func (u *Upstream) chatURL() string {
-	return u.base + "/chat/completion?" + sessionQuery(u.tabID, "").Encode()
-}
+// A chat turn posts to the same URL the video submit does, so it uses the same
+// builder rather than a second copy that can drift from it.
 
 // buildChatBody renders a text turn.
 //
