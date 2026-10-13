@@ -186,7 +186,7 @@ func (a *api) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The task runs asynchronously, so 202 with a task to poll.
-	writeJSON(w, http.StatusAccepted, a.toAPITask(*task))
+	writeJSON(w, http.StatusAccepted, a.toAPITask(task))
 }
 
 // handleGet returns a task's state.

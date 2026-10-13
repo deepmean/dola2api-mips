@@ -119,16 +119,21 @@ func (p *Pool) signal() {
 	}
 }
 
-// Submit queues a request and returns the task to poll.
-func (p *Pool) Submit(req SubmitRequest) (*Task, error) {
+// Submit queues a request and returns a snapshot of the new task.
+//
+// The snapshot is taken while the lock is held. Returning the live pointer
+// instead would let a caller read fields the worker is writing, which is a data
+// race the race detector caught in exactly that form: the API dereferenced the
+// task to render it while a worker was setting its state.
+func (p *Pool) Submit(req SubmitRequest) (Task, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if p.closed {
-		return nil, ErrPoolClosed
+		return Task{}, ErrPoolClosed
 	}
 	if len(p.queue)+p.running >= p.cfg.MaxPendingTasks {
-		return nil, ErrPoolFull
+		return Task{}, ErrPoolFull
 	}
 
 	task := &Task{
@@ -141,7 +146,7 @@ func (p *Pool) Submit(req SubmitRequest) (*Task, error) {
 	p.queue = append(p.queue, task)
 	p.evictLocked()
 	p.signal()
-	return task, nil
+	return *task, nil
 }
 
 // Get returns a snapshot of a task.
