@@ -1,0 +1,13 @@
+[
+  {
+    "label": "primary",
+    "cookie": "sessionid=REPLACE_ME; sid_tt=REPLACE_ME; ttwid=REPLACE_ME; s_v_web_id=REPLACE_ME; msToken=REPLACE_ME",
+    "enabled": true
+  },
+  {
+    "label": "spare",
+    "cookie": "sessionid=REPLACE_ME_TOO; sid_tt=REPLACE_ME_TOO",
+    "enabled": false,
+    "daily_limit": 1
+  }
+]

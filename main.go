@@ -133,6 +133,18 @@ func main() {
 	defer egress.Close()
 	srv.egressState = egress.State
 
+	// A missing accounts file is not fatal: the service starts, /health reports
+	// why it cannot work, and the operator adds sessions then sends SIGHUP.
+	accounts := NewAccountStore(cfg)
+	if err := accounts.Load(); err != nil {
+		log.Printf("accounts: %v (service will report unavailable until fixed)", err)
+	} else {
+		log.Printf("accounts: loaded %d session(s) from %s", len(accounts.Cookies()), cfg.AccountsFile)
+	}
+	srv.accounts = func() []any { return accounts.Health(time.Now()) }
+	srv.available = func() bool { return accounts.Available(time.Now()) }
+	srv.reloadError = accounts.LastError
+
 	raw, err := net.Listen("tcp", cfg.Addr())
 	if err != nil {
 		log.Fatalf("listen %s: %v", cfg.Addr(), err)
@@ -149,16 +161,20 @@ func main() {
 		ErrorLog:          log.New(os.Stderr, "http: ", log.LstdFlags),
 	}
 
-	// SIGHUP will reload accounts.json and proxies.json without a restart once
-	// the reloader lands; ignoring it now keeps a stray signal from killing the
-	// service (SIGHUP's default action is termination).
+	// SIGHUP re-reads accounts.json in place. Sessions whose cookie is unchanged
+	// keep their daily usage, so a reload cannot hand an exhausted session a
+	// fresh quota.
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		for sig := range sigs {
 			switch sig {
 			case syscall.SIGHUP:
-				log.Printf("SIGHUP received; hot reload is not wired yet, ignoring")
+				if err := accounts.Reload(); err != nil {
+					log.Printf("SIGHUP: reload failed, keeping the running set: %v", err)
+					continue
+				}
+				log.Printf("SIGHUP: reloaded %d session(s) from %s", len(accounts.Cookies()), cfg.AccountsFile)
 			default:
 				log.Printf("%s received; shutting down", sig)
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

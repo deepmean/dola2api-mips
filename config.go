@@ -52,6 +52,10 @@ type Config struct {
 	MirrorMaxBytes int64
 	MirrorTTL      time.Duration
 
+	// AccountsFile is the JSON list of upstream sessions. It is read at start
+	// and re-read on SIGHUP, so a session can be added without a restart.
+	AccountsFile string
+
 	ReferenceImageMaxBytes int64
 	ReferenceImageMaxCount int
 
@@ -94,13 +98,16 @@ const (
 	defaultFirstByte       = 20 * time.Second
 	defaultSubmitDeadline  = 30 * time.Second
 	defaultStoreMode       = "redirect"
-	defaultMirrorMaxBytes  = 32 << 20
-	defaultMirrorTTLHours  = 24
-	defaultRefImageBytes   = 4 << 20
-	defaultRefImageCount   = 30
-	defaultHeapSoftLimit   = 32 << 20
-	defaultMaxConnections  = 32
-	defaultMaxHeaderBytes  = 32 << 10
+	// defaultAccountsFile lives under the install root the init script uses, so
+	// the operator edits one file next to the binary's config.
+	defaultAccountsFile   = "/opt/dola2api/accounts.json"
+	defaultMirrorMaxBytes = 32 << 20
+	defaultMirrorTTLHours = 24
+	defaultRefImageBytes  = 4 << 20
+	defaultRefImageCount  = 30
+	defaultHeapSoftLimit  = 32 << 20
+	defaultMaxConnections = 32
+	defaultMaxHeaderBytes = 32 << 10
 )
 
 // fixedZoneMinutes maps the timezone names an operator may plausibly set to
@@ -232,6 +239,11 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	cfg.MirrorTTL = time.Duration(mirrorTTLHours) * time.Hour
+
+	cfg.AccountsFile = strings.TrimSpace(getenv("DOLA_ACCOUNTS_FILE"))
+	if cfg.AccountsFile == "" {
+		cfg.AccountsFile = defaultAccountsFile
+	}
 
 	if cfg.ReferenceImageMaxBytes, err = envInt64(getenv, "DOLA_REFERENCE_IMAGE_MAX_BYTES", defaultRefImageBytes); err != nil {
 		return Config{}, err
