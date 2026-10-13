@@ -10,3 +10,15 @@ pool_usage.db
 dola2api.conf
 downloads/
 *.log
+
+# Credentials. A sessionid is a live login for a real account: it must never
+# reach a commit, and the router reads it from a 0600 file instead.
+cookies.txt
+cookies*.txt
+*.cookie
+.env
+.env.local
+
+# Probe output can contain signed CDN URLs and conversation ids.
+spikes/protocol_result.json
+spikes/verify_result.json

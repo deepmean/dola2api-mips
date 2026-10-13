@@ -3,7 +3,7 @@
 探针脚本：`spikes/egress_probe.py`（纯标准库，无需 aiohttp/requests）
 原始数据：`spikes/egress_result.json`、`spikes/egress_result_proxy.json`
 
-**状态：出口部分已完成；协议提交部分待 cookie（见 §4）。**
+**状态：出口部分已完成；cookie 实测已完成（§6）；协议提交侧见 §7。**
 
 ---
 
@@ -120,3 +120,108 @@ python spikes/protocol_probe.py \
 | `DOLA_EGRESS_FIRST_BYTE_TIMEOUT` 默认 25s → **20s** | 见 §3.2 实测 |
 | 健康探针目标 httpbin → `www.dola.com/robots.txt` | 见 §3.5 实测 |
 | `spikes/` 随移植仓库一起走（而非留在上游 checkout） | 证据与产物同仓，便于复核 |
+
+---
+
+## 6. cookie 实测（`spikes/verify_cookie.py`，真账号）
+
+探针打的就是路由器将来 `verify` 要打的那一个请求（`POST /im/chain/recent_conv`，cmd 3200）。
+
+| 出口 | 结果 |
+| --- | --- |
+| **relay** | **`200` + `downlink_body.pull_recent_conv_chain_downlink_body` 存在**（1 个会话 cell）→ **cookie 有效，relay 路径可用** |
+| direct | **`302` → `https://www.dola.com/chat/`**（同样的 cookie、同样的请求） |
+
+### 6.1 直连出口不可用（重要）
+
+同一个 cookie，经 relay 返回 200，直连被 302 弹回 `/chat/`。两者唯一差别是**来源 IP**。
+上游按来源 IP 做地理/风控门禁，**直连出口拿不到数据**。
+
+这把 `DOLA_STRICT_PROXY=1` 从"防御性设计"变成"实测必需"：一旦出口失败回落直连，
+得到的是跳转页面而不是响应——而且很可能被上层误判成 cookie 失效。所以回落必须被禁止，
+并把 `REDIRECT`（3xx）单独归类，别和"会话过期"混在一起。
+
+### 6.2 会话寿命 60 天
+
+`sid_guard` 的结构是 URL 编码的竖线分隔：`<sessionid>|<issued_epoch>|<ttl>|<GMT 到期时间>`。
+实测 `ttl=5184000`（60 天），我按 `issued+ttl` 算出的到期时间与 cookie 自述的
+`Sat, 12-Dec-2026 00:17:41 GMT` **完全一致**（脚本内置了这个交叉校验）。
+
+**结论**：离线供给 cookie 的频率是 **60 天一次、每次约 2 分钟**。这是"全程路由器独立完成"
+的可行性依据——运行时全自动，供给是低频人工动作。
+
+### 6.3 探针自身的两个 bug（记录以免重犯）
+
+第一次跑出来是 `0/1 usable`，**结论是错的**，错在探针不在 cookie：
+
+1. **把 body 截断到 800 字符后再 `json.loads`** → 合法 JSON 必然解析失败，被判成"不是 JSON"。
+   修法：完整 body 用于解析，另存一份截断副本仅用于显示。
+2. **`sid_guard` 用"扫描长数字串"解算** → 被 sessionid 哈希里的 8 位数字串污染，
+   算出 `ttl=23511880s / +272 天` 的错值。修法：按位置解析（`|` 分隔），并用 cookie
+   自述的 GMT 日期交叉校验。
+
+另外 `direct` 路径把裸域名喂给 `urlsplit` 导致 `hostname=None` 崩溃，也已修。
+
+---
+
+## 7. 协议提交侧（决策门）——**当前结论：纯协议提交不可用**
+
+脚本：`spikes/protocol_probe.py`（复用上游 `dola_client.DolaClient`）、`spikes/submit_diag.py`
+（把线上原始响应打出来）、`spikes/decode_msg.py`（解错误字节）。
+
+### 7.1 三条出口的完整矩阵
+
+| 出口 | HTTP | 上游返回 | 卡在哪一层 |
+| --- | --- | --- | --- |
+| direct（大陆 IP） | `302` → `https://www.dola.com/chat/` | HTML 跳转 | **地理拒绝**（操作者确认：dola 拒绝中国大陆 IP） |
+| proxy（`127.0.0.1:10808`，JP 机房 IP） | `200` + `text/event-stream` | `STREAM_ERROR 710022004` `subtype=slide` `from=shark_admin` | **风控层**（滑块验证码） |
+| **relay（Vercel `sin1`）** | `200` + `text/event-stream` | `STREAM_ERROR 718013001`「预分配会话位置信息失败」 | **通过了风控**，卡在会话创建 |
+
+三条出口**在三个不同的层被拦**。relay 是唯一通过风控的出口，也是操作者指明的必需出口。
+
+### 7.2 排除的假设（都已实测）
+
+| 假设 | 实测 | 结论 |
+| --- | --- | --- |
+| 只是 `msToken` 过期/绑定 IP | 用服务器每次响应新发的 `X-Ms-Token` 连试 3 次 | ❌ 3/3 完全相同的 `718013001` |
+| 视频技能/`bot_id` 特有 | 改走**图片生成**（`ability_type=16` vs 视频 `17`，同端点同客户端同出口） | ❌ 报**一模一样**的 `718013001` → 不是视频层的问题 |
+| relay 把 POST body 变成 chunked，上游不认 | 经 relay POST 到 httpbin，上游看到 `Content-Length: 16` | ❌ 编码被正确保留 |
+| relay 丢/改业务头 | 请求头逐项核对（`Content-Type`/`agw-js-conv`/`Referer`/`Origin`/`Cookie`/`msToken`/`fp` 全部到位） | ❌ 请求形状正确 |
+| 登录态无效 | 响应头 `X-Tt-Agw-Login: 1`，且 `recent_conv` 读请求 `200` | ❌ 登录有效 |
+
+### 7.3 结论
+
+**`dola_client` 的纯协议路径无法创建会话**：三条出口里唯一可用的 relay 上，任何能力（视频/图片）
+的新会话创建都稳定失败。错误信息是服务端的「预分配会话位置信息失败」，不是验证码、不是限流、
+不是登录问题。
+
+浏览器路径能过，说明差别在于**浏览器上下文**——可能是页面加载时的一串前置调用
+（`/samantha/skill/pack`、`/alice/slot/action_bar_v3/get_item_conf`、页面 HTML 本身），
+也可能是 TLS/HTTP2 客户端指纹。两者都无法靠读代码断定，需要**一份能跑通的客户端的真实请求**。
+
+已排除的：请求 body 形状（与浏览器路径 `SUBMIT_JS` 逐字段对照一致）、参数集、头部、编码、token。
+
+### 7.4 错误信息的解码插曲（记录以免重犯）
+
+第一轮把 `error_msg` 读成 `Ԥ����Ựλ����Ϣʧ��`，看起来像编码损坏。实际那 33 个字节
+（`e9a284…e8b4a5`）是**合法 UTF-8**，正确解码为「预分配会话位置信息失败」——
+**乱码来自 PowerShell 控制台的 GBK 码页**，不是数据。教训：怀疑编码前先看十六进制。
+`spikes/decode_msg.py` 就是为此留下的工具。
+
+---
+
+## 8. 计划修正汇总
+
+| 修正 | 依据 |
+| --- | --- |
+| **锁定 Route A**：不做 sidecar，运行时全链路路由器独立完成 | 操作者要求；cookie 寿命 60 天使离线供给频率可接受 |
+| Task 15（sidecar 执行器）移出实施范围 | 同上（保留 `Executor` 接口，未来若要兜底仍是加一个实现） |
+| Task 0 验收：`--runs 2`（受 `DAILY_LIMIT=2` 约束），不是 10 | §7 |
+| **Task 6 新增 `IsDailyLimit`** | `dola_client._poll_video` 只查 `CREDIT_FAIL_PATTERN`，**不查每日上限**；协议路径会把"今天已用完"误判成超时，池就不会换号而是干等。Go 版必须补上（模式取自 `video_worker_ui.DAILY_LIMIT_PATTERN`） |
+| `DOLA_STRICT_PROXY=1` 从防御性默认升级为**实测必需** | §6.1 |
+| 新增 `REDIRECT` 错误分类（3xx 不等于会话过期） | §6.1 |
+| `DOLA_EGRESS_FIRST_BYTE_TIMEOUT` 25s → 20s | §3.2 |
+| 健康探针 httpbin → `www.dola.com/robots.txt` | §3.5 |
+| `.gitignore` 补 `cookies.txt` 等凭据模式 | 原忽略清单漏了它，是真实泄漏风险 |
+| **Task 0 决策门未通过：Route A 尚未证实** | §7.3：纯协议路径在唯一可用出口（relay）上无法创建会话，任何能力都一样 |
+| 决策门的下一个依赖：**一份能跑通的浏览器提交的真实请求** | §7.3：请求形状/参数/头部/编码/token 都已排除，剩下的是浏览器上下文 |
