@@ -8,6 +8,9 @@ proxies.json
 tasks.jsonl
 pool_usage.db
 dola2api.conf
+# ...but the deploy template is not a secret: it is the commented starting point
+# the README tells the operator to copy, and the tests parse it.
+!deploy/dola2api.conf
 downloads/
 *.log
 
