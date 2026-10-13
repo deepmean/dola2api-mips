@@ -266,7 +266,9 @@ func (p *Pool) run(ctx context.Context, task *Task) {
 	cancelSubmit()
 	if err != nil {
 		p.accounts.RecordFailure(account, time.Now(), err)
-		p.fail(task, fmt.Errorf("submit: %w", err))
+		// No extra prefix: the upstream client already says where it failed, and
+		// wrapping it again produced "submit: submit: ..." in the device log.
+		p.fail(task, err)
 		return
 	}
 

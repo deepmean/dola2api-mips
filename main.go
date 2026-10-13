@@ -123,6 +123,11 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	// Ordinary progress goes to stdout so procd logs it at notice rather than
+	// err. Go's log package defaults to stderr, which made a healthy startup
+	// look like an error in logread.
+	log.SetOutput(os.Stdout)
+
 	cfg, err := LoadConfig(os.Getenv)
 	if err != nil {
 		log.Fatalf("config: %v", err)
