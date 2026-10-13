@@ -155,3 +155,92 @@ window.__LOADABLE_LOADED_CHUNKS__.push = function (data) {
   return Array.prototype.push.call(window.__LOADABLE_LOADED_CHUNKS__, data);
 };
 `
+
+// ChunkLoader installs the chunk a lazily-loaded SDK was delivered as and runs
+// the module that assigns window.bdms.
+//
+// A chunk file only registers its modules by pushing them into
+// __LOADABLE_LOADED_CHUNKS__; the runtime that installs and executes them lives
+// in the app's main bundle. The chunk carries its own require, so capturing the
+// push, installing the modules and running the entry module by id is enough.
+// The entry module is found by looking for the assignment rather than hardcoding
+// an id, because the id is minified per build.
+const ChunkLoader = `
+(function () {
+  var pushed = window.__bdmsPushed;
+  if (!pushed) { throw new Error("chunk did not push anything"); }
+  var modules = pushed[1] || {};
+  var ids = Object.keys(modules);
+  var entry = null;
+  for (var i = 0; i < ids.length; i++) {
+    if (String(modules[ids[i]]).indexOf("window.bdms=") >= 0) { entry = ids[i]; break; }
+  }
+  window.__bdmsEntry = entry;
+  window.__bdmsModuleCount = ids.length;
+  if (entry === null) { throw new Error("no module assigns window.bdms"); }
+
+  var cache = {};
+  function req(id) {
+    if (cache[id]) { return cache[id].exports; }
+    var mod = { exports: {} };
+    cache[id] = mod;
+    modules[id].call(mod.exports, mod, mod.exports, req);
+    return mod.exports;
+  }
+  // Webpack modules call helpers hanging off the require function; without them
+  // a module that does require.d(...) or require.t(...) throws before it can
+  // export anything.
+  req.o = function (obj, prop) { return Object.prototype.hasOwnProperty.call(obj, prop); };
+  req.r = function (exports) {
+    if (typeof Symbol !== "undefined" && Symbol.toStringTag) {
+      Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
+    }
+    Object.defineProperty(exports, "__esModule", { value: true });
+  };
+  req.d = function (exports, definition, getter) {
+    if (getter === undefined) {
+      for (var key in definition) {
+        if (req.o(definition, key) && !req.o(exports, key)) {
+          Object.defineProperty(exports, key, { enumerable: true, get: definition[key] });
+        }
+      }
+      return;
+    }
+    Object.defineProperty(exports, definition, { enumerable: true, get: getter });
+  };
+  req.n = function (module) {
+    var getter = module && module.__esModule
+      ? function () { return module["default"]; }
+      : function () { return module; };
+    req.d(getter, { a: getter });
+    return getter;
+  };
+  req.t = function (value, mode) {
+    if (mode & 1) { value = this(value); }
+    if (mode & 8) { return value; }
+    if (typeof value === "object" && value) {
+      if ((mode & 4) && value.__esModule) { return value; }
+      if ((mode & 16) && typeof value.then === "function") { return value; }
+    }
+    var ns = Object.create(null);
+    req.r(ns);
+    Object.defineProperty(ns, "default", { enumerable: true, value: value });
+    if (mode & 2 && typeof value !== "string") {
+      for (var key in value) {
+        req.d(ns, key, function (k) { return value[k]; }.bind(null, key));
+      }
+    }
+    return ns;
+  };
+  window.__bdmsRequire = req;
+  try {
+    req(entry);
+    window.__bdmsErr = null;
+  } catch (e) {
+    window.__bdmsErr = {
+      message: String(e && e.message ? e.message : e),
+      stack: String(e && e.stack ? e.stack : "(no stack)")
+    };
+  }
+})();
+`
