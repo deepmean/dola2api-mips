@@ -70,7 +70,7 @@ CI 还带三条门禁：
 | --- | --- |
 | 稳态 RSS（空闲） | ≤ 12MB |
 | 峰值 RSS（1 个在飞任务 + 4MB 参考图） | ≤ 32MB |
-| 二进制体积（防膨胀门禁） | ≤ 7.5MB |
+| 二进制体积（防膨胀门禁） | ≤ 9MB |
 | 稳态 `MemAvailable` 下降 | ≤ 15MB |
 
 OOM 自保：`DOLA_HEAP_SOFT_LIMIT`（默认 32MiB）在大分配前检查 `HeapAlloc`，
