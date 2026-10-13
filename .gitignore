@@ -35,3 +35,4 @@ spikes/cookies.cdp.json
 spikes/captured_submit_url.txt
 spikes/tls_impersonate_result.json
 spikes/tls_after_browser.json
+spikes/poll_check_result.json
