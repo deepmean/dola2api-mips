@@ -343,25 +343,32 @@ func (u *Upstream) VerifySession(ctx context.Context, cookie string) error {
 		return fmt.Errorf("verify: upstream status %d: %s", resp.StatusCode, firstLine(raw, 160))
 	}
 
+	// The failure signal on this endpoint is status_code, not code, and a dead
+	// session answers 200 with downlink_body as an EMPTY OBJECT rather than
+	// null. Checking the wrong field made verification a false positive: a
+	// sessionid of deadbeef passed, which is the opposite of the point.
 	var parsed struct {
-		Code int    `json:"code"`
-		Msg  string `json:"msg"`
-		// The list itself is the proof of life; an empty account still returns
-		// the field.
-		DownlinkBody *struct {
-			Chain struct {
-				Conversations []json.RawMessage `json:"conversations"`
-			} `json:"pull_recent_conv_chain_downlink_body"`
+		StatusCode int    `json:"status_code"`
+		StatusDesc string `json:"status_desc"`
+		Code       int    `json:"code"`
+		Msg        string `json:"msg"`
+		Downlink   struct {
+			Chain json.RawMessage `json:"pull_recent_conv_chain_downlink_body"`
 		} `json:"downlink_body"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return fmt.Errorf("verify: upstream sent something unreadable: %s", firstLine(raw, 120))
 	}
-	if parsed.Code != 0 {
-		return fmt.Errorf("verify: upstream refused the session: %d %s", parsed.Code, parsed.Msg)
+	if parsed.StatusCode != 0 {
+		return fmt.Errorf("verify: the session was refused: %d %s", parsed.StatusCode, parsed.StatusDesc)
 	}
-	if parsed.DownlinkBody == nil {
-		return errors.New("verify: the session was accepted but the response carried no body")
+	if parsed.Code != 0 {
+		return fmt.Errorf("verify: the session was refused: %d %s", parsed.Code, parsed.Msg)
+	}
+	// The conversation list is the proof of life. A live session always returns
+	// one, even with no conversations in it.
+	if len(parsed.Downlink.Chain) == 0 || string(parsed.Downlink.Chain) == "null" {
+		return errors.New("verify: the session was accepted but no conversation list came back, which is what a dead session returns")
 	}
 	return nil
 }
@@ -421,10 +428,6 @@ func (u *Upstream) Submit(ctx context.Context, cookie string, req SubmitRequest)
 	if err != nil {
 		return "", err
 	}
-	aBogus, err := PlaceholderABogus()
-	if err != nil {
-		return "", err
-	}
 
 	hdr := http.Header{}
 	hdr.Set("Content-Type", "application/json")
@@ -432,7 +435,7 @@ func (u *Upstream) Submit(ctx context.Context, cookie string, req SubmitRequest)
 	hdr.Set("Accept", "*/*")
 	hdr.Set("Cookie", cookie)
 
-	resp, err := u.egress.Do(ctx, http.MethodPost, u.submitURL(aBogus), hdr, body)
+	resp, err := u.egress.Do(ctx, http.MethodPost, u.submitURL(), hdr, body)
 	if err != nil {
 		return "", fmt.Errorf("submit: %w", err)
 	}
@@ -455,7 +458,18 @@ func (u *Upstream) Submit(ctx context.Context, cookie string, req SubmitRequest)
 const maxSubmitBody = 256 << 10
 
 // submitURL builds the submit URL with the parameter set the page sends.
-func (u *Upstream) submitURL(aBogus string) string {
+//
+// It deliberately carries no a_bogus. Measured on the live endpoint: a submit
+// with no a_bogus at all is accepted and acknowledged, while one carrying a
+// well-formed but meaningless a_bogus is refused with 710022002 — the same code
+// a genuinely invalid signature gets. So the parameter is only validated when it
+// is present, and sending a placeholder is worse than sending nothing.
+//
+// That is the whole of the signing question for this endpoint: the way to
+// satisfy it is to omit it. An earlier reading of the same measurements
+// concluded the opposite, because a service-side throttle was in force at the
+// time and made every variant fail differently.
+func (u *Upstream) submitURL() string {
 	params := url.Values{}
 	for k, v := range map[string]string{
 		"aid": "495671", "channel": "g", "device_platform": "web",
@@ -465,7 +479,6 @@ func (u *Upstream) submitURL(aBogus string) string {
 	} {
 		params.Set(k, v)
 	}
-	params.Set("a_bogus", aBogus)
 	return u.base + "/chat/completion?" + params.Encode()
 }
 

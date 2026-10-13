@@ -18,19 +18,15 @@ type SubmitRequest struct {
 
 // Executor turns a request into an upstream conversation id.
 //
-// It is an interface because the submit half of the pipeline is the one part
-// that cannot be done with a plain HTTP client today: the page signs its submit
-// with an a_bogus parameter, and producing a valid one is unsolved. Everything
-// after the submit (polling, retrieval) needs neither a browser nor a
-// signature, so the split lets the working half ship while the other is
-// settled.
-//
-// The measured behaviour of the gate, for whoever replaces this: a submit with
-// no a_bogus answers 710022004 (slide captcha), a submit with any well-formed
-// a_bogus answers 710022002, and a garbage signature is indistinguishable from a
-// valid one. So the layer consulted first only checks that something shaped
-// like an a_bogus is present. If a later layer turns out to validate it, only
-// the implementation below has to change.
+// It is an interface because the submit half of the pipeline was for a long time
+// the part that could not be done with a plain HTTP client: the page signs its
+// submit with an a_bogus parameter. That turned out to be a red herring —
+// measured on the live endpoint, a submit with no a_bogus is accepted, while one
+// carrying a well-formed but meaningless a_bogus is refused with 710022002, the
+// same code an invalid signature gets. The parameter is only validated when it
+// is present, so the way to satisfy it is to omit it. The interface stays
+// because a second implementation is still plausible (a sidecar, or a different
+// upstream), not because this one is a placeholder.
 type Executor interface {
 	// Name identifies the implementation in logs and /health.
 	Name() string

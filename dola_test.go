@@ -273,6 +273,109 @@ func TestFormatErrorCode(t *testing.T) {
 	}
 }
 
+// The submit URL must not carry a_bogus. This is the single most expensive
+// lesson in this port: sending a placeholder signature looked harmless and
+// actively broke every submission, while omitting the parameter is accepted.
+func TestSubmitURLCarriesNoSignature(t *testing.T) {
+	egress, err := NewEgress(Config{EgressMode: "direct"})
+	if err != nil {
+		t.Fatalf("NewEgress: %v", err)
+	}
+	defer egress.Close()
+
+	u := NewUpstream(egress)
+	target := u.submitURL()
+
+	if strings.Contains(target, "a_bogus") {
+		t.Errorf("the submit URL carries a_bogus, which the upstream refuses: %s", target)
+	}
+	for _, want := range []string{"/chat/completion?", "aid=495671", "version_code=20800", "web_tab_id="} {
+		if !strings.Contains(target, want) {
+			t.Errorf("the submit URL is missing %q: %s", want, target)
+		}
+	}
+}
+
+// The request the adapter actually sends must match, not just the URL builder.
+func TestSubmitSendsNoSignatureParameter(t *testing.T) {
+	var sawQuery string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("id: 0\nevent: SSE_ACK\ndata: {\"ack_client_meta\":{\"conversation_id\":\"42\"}}\n\n"))
+	}))
+	defer upstream.Close()
+
+	egress, err := NewEgress(Config{EgressMode: "direct", FirstByteTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("NewEgress: %v", err)
+	}
+	defer egress.Close()
+
+	client := NewUpstream(egress)
+	client.base = upstream.URL
+
+	convID, err := client.Submit(context.Background(), "sessionid=x",
+		SubmitRequest{Prompt: "a cat", Ratio: "9:16", Model: "seedance_v2.0", Duration: 10})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if convID != "42" {
+		t.Errorf("conversation id = %q", convID)
+	}
+	if strings.Contains(sawQuery, "a_bogus") {
+		t.Errorf("the request carried a_bogus: %s", sawQuery)
+	}
+}
+
+func TestBuildSubmitBodyShape(t *testing.T) {
+	body, err := buildSubmitBody(SubmitRequest{
+		Prompt: "a cat", Ratio: "9:16", Model: "seedance_v2.0", Duration: 10,
+	}, time.Unix(1700000000, 0))
+	if err != nil {
+		t.Fatalf("buildSubmitBody: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("body is not JSON: %v", err)
+	}
+	ability, ok := parsed["chat_ability"].(map[string]any)
+	if !ok {
+		t.Fatal("chat_ability missing")
+	}
+	if ability["ability_type"] != float64(17) {
+		t.Errorf("ability_type = %v, want 17 for video", ability["ability_type"])
+	}
+	var param map[string]any
+	if err := json.Unmarshal([]byte(ability["ability_param"].(string)), &param); err != nil {
+		t.Fatalf("ability_param is not JSON: %v", err)
+	}
+	if param["model"] != "seedance_v2.0" || param["ratio"] != "9:16" || param["duration"] != float64(10) {
+		t.Errorf("ability_param = %v", param)
+	}
+
+	messages, ok := parsed["messages"].([]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("messages = %v", parsed["messages"])
+	}
+	first := messages[0].(map[string]any)
+	blocks := first["content_block"].([]any)
+	block := blocks[0].(map[string]any)
+	if block["block_type"] != float64(10000) {
+		t.Errorf("block_type = %v, want 10000", block["block_type"])
+	}
+	text := block["content"].(map[string]any)["text_block"].(map[string]any)["text"]
+	if text != "a cat" {
+		t.Errorf("prompt = %v", text)
+	}
+}
+
+func TestBuildSubmitBodyRejectsAnEmptyPrompt(t *testing.T) {
+	if _, err := buildSubmitBody(SubmitRequest{}, time.Now()); err == nil {
+		t.Error("an empty prompt was accepted")
+	}
+}
+
 func TestNewUUIDIsWellFormed(t *testing.T) {
 	seen := map[string]bool{}
 	for i := 0; i < 64; i++ {

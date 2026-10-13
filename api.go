@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -143,7 +144,24 @@ func (a *api) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/videos", a.withAuth(a.handleCreate))
 	mux.HandleFunc("GET /v1/videos/{id}", a.withAuth(a.handleGet))
 	mux.HandleFunc("GET /v1/videos/{id}/content", a.withAuth(a.handleContent))
+	// The path the first draft of the README documented. Kept as an alias so a
+	// client written against it does not start 404ing.
+	mux.HandleFunc("POST /v1/videos/generations", a.withAuth(a.handleCreate))
+	a.registerChat(mux)
 	a.registerAdmin(mux)
+	mux.HandleFunc("/", a.handleNotFound)
+}
+
+// handleNotFound answers anything unmatched and says what was asked for.
+//
+// Without this a mismatched path is a bare "404 page not found" with nothing in
+// the log, which is exactly the situation a client integration produces and
+// exactly the one that is hardest to diagnose from the outside.
+func (a *api) handleNotFound(w http.ResponseWriter, r *http.Request) {
+	log.Printf("unmatched request: %s %s (from %s)", r.Method, r.URL.Path, r.RemoteAddr)
+	writeError(w, http.StatusNotFound,
+		fmt.Sprintf("%s %s is not an endpoint on this service; see GET /v1/models and the README for what is",
+			r.Method, r.URL.Path), "not_found")
 }
 
 // withAuth wraps a handler with the key check and the heap soft limit.

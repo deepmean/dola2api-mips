@@ -209,52 +209,69 @@ func TestRemoveDropsOnlyTheNamedSession(t *testing.T) {
 	}
 }
 
-// verificationServer answers the recent-conv call the way a live session does.
-func verificationServer(t *testing.T, code int, withBody bool) *httptest.Server {
+// verificationServer answers the recent-conv call with the shapes the upstream
+// actually returns, which is what makes the test meaningful: the failure signal
+// is status_code, and a dead session answers 200 with an EMPTY downlink_body
+// object rather than an error.
+func verificationServer(t *testing.T, live bool) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if withBody {
-			_, _ = w.Write([]byte(`{"code":0,"msg":"","downlink_body":{"pull_recent_conv_chain_downlink_body":{"conversations":[]}}}`))
+		if live {
+			_, _ = w.Write([]byte(`{"cmd":3200,"downlink_body":{"pull_recent_conv_chain_downlink_body":` +
+				`{"messages":[],"has_more":false,"cells":[{"id":"38416996481149201"}]}},"version":"1"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"code":` + json.Number(rune('0'+code)).String() + `,"msg":"login invalid"}`))
+		_, _ = w.Write([]byte(`{"cmd":3200,"downlink_body":{},"version":"1",` +
+			`"status_code":712012001,"status_desc":"鐧诲綍鏍￠獙涓嶅悎娉?,"ext":{"tt_stable":"0"}}`))
 	}))
 	t.Cleanup(srv.Close)
 	return srv
 }
 
-func TestVerifySessionAcceptsALiveSession(t *testing.T) {
-	srv := verificationServer(t, 0, true)
+func newVerifyUpstream(t *testing.T, srv *httptest.Server) *Upstream {
+	t.Helper()
 	egress, err := NewEgress(Config{EgressMode: "direct", FirstByteTimeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("NewEgress: %v", err)
 	}
-	defer egress.Close()
-
+	t.Cleanup(egress.Close)
 	up := NewUpstream(egress)
 	up.base = srv.URL
+	return up
+}
+
+func TestVerifySessionAcceptsALiveSession(t *testing.T) {
+	up := newVerifyUpstream(t, verificationServer(t, true))
 	if err := up.VerifySession(context.Background(), "sessionid=live; msToken=x; s_v_web_id=y"); err != nil {
 		t.Fatalf("VerifySession: %v", err)
 	}
 }
 
+// The device run is what found this: a bogus sessionid was reported as verified
+// because the check looked at "code", which this endpoint does not use.
 func TestVerifySessionRejectsADeadSession(t *testing.T) {
-	srv := verificationServer(t, 1, false)
-	egress, err := NewEgress(Config{EgressMode: "direct", FirstByteTimeout: 5 * time.Second})
-	if err != nil {
-		t.Fatalf("NewEgress: %v", err)
-	}
-	defer egress.Close()
-
-	up := NewUpstream(egress)
-	up.base = srv.URL
-	err = up.VerifySession(context.Background(), "sessionid=dead")
+	up := newVerifyUpstream(t, verificationServer(t, false))
+	err := up.VerifySession(context.Background(), "sessionid=deadbeefdeadbeefdeadbeefdeadbeef")
 	if err == nil {
-		t.Fatal("a session the upstream refused was accepted")
+		t.Fatal("a session the upstream refused was reported as verified")
 	}
-	if !strings.Contains(err.Error(), "7100120") && !strings.Contains(err.Error(), "refused") {
-		t.Errorf("error %q does not say the session was refused", err)
+	if !strings.Contains(err.Error(), "712012001") {
+		t.Errorf("error %q does not carry the upstream's status code", err)
+	}
+}
+
+func TestVerifySessionRejectsA200WithNoConversationList(t *testing.T) {
+	// A response that says nothing either way must not be read as success.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"cmd":3200,"downlink_body":{},"version":"1"}`))
+	}))
+	defer srv.Close()
+
+	up := newVerifyUpstream(t, srv)
+	if err := up.VerifySession(context.Background(), "sessionid=x"); err == nil {
+		t.Error("a response with no conversation list was accepted")
 	}
 }
 
@@ -296,7 +313,7 @@ func TestPanelIsServedAndCarriesNoSecrets(t *testing.T) {
 }
 
 func TestAddAccountEndpointVerifiesBeforeSaving(t *testing.T) {
-	srv := verificationServer(t, 0, true)
+	srv := verificationServer(t, true)
 	egress, err := NewEgress(Config{EgressMode: "direct", FirstByteTimeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("NewEgress: %v", err)
@@ -325,7 +342,7 @@ func TestAddAccountEndpointVerifiesBeforeSaving(t *testing.T) {
 }
 
 func TestAddAccountEndpointRefusesADeadCookie(t *testing.T) {
-	srv := verificationServer(t, 1, false)
+	srv := verificationServer(t, false)
 	egress, err := NewEgress(Config{EgressMode: "direct", FirstByteTimeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("NewEgress: %v", err)
