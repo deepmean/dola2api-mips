@@ -30,6 +30,8 @@ type Upstream struct {
 	base string
 	// imageSkill is the ability_type used for image requests.
 	imageSkill int
+	// device is the stable identifier set the client sends with every write.
+	device DeviceIdentity
 	// now is injectable so tests can pin timestamps.
 	now func() time.Time
 }
@@ -48,6 +50,7 @@ func NewUpstream(egress *Egress) *Upstream {
 		tabID:      newUUID(),
 		base:       defaultBase,
 		imageSkill: skillImage,
+		device:     DeviceIdentity{TZName: "Asia/Shanghai"},
 		now:        time.Now,
 	}
 }
@@ -403,7 +406,7 @@ func (u *Upstream) VerifySession(ctx context.Context, cookie string) error {
 	hdr.Set("Cookie", cookie)
 
 	resp, err := u.egress.Do(ctx, http.MethodPost,
-		u.base+"/im/chain/recent_conv?"+sessionQuery(u.tabID, cookie).Encode(), hdr, body)
+		u.base+"/im/chain/recent_conv?"+sessionQuery(u.tabID, cookie, u.device).Encode(), hdr, body)
 	if err != nil {
 		return fmt.Errorf("verify: %w", err)
 	}
@@ -449,21 +452,48 @@ func (u *Upstream) VerifySession(ctx context.Context, cookie string) error {
 
 // sessionQuery is the parameter set these calls share. msToken and fp come from
 // the cookie when it has them, since a request without them carries more risk.
-func sessionQuery(tabID, cookie string) url.Values {
+// clientPCVersion is the version the web client reports. The port used 3.32.61,
+// which is old enough that the upstream can tell it apart from a current client.
+const clientPCVersion = "3.41.0"
+
+// sessionQuery builds the query string the web client sends.
+//
+// Captured verbatim from the browser while it was answering normally, because
+// the parameter set is not decorative. The port sent eleven of these twenty,
+// plus a channel parameter the client does not send, plus a language the client
+// leaves empty, and every write was refused while the browser's own requests
+// went through. The identifiers come from DeviceIdentity, which is where the
+// client keeps them.
+//
+// msToken travels as a cookie and is deliberately not a query parameter: the
+// captured request did not carry it in the query even though the session had
+// one, so adding it was this port's own invention.
+func sessionQuery(tabID, cookie string, device DeviceIdentity) url.Values {
 	params := url.Values{}
 	for k, v := range map[string]string{
-		"version_code": "20800", "language": "ja", "device_platform": "web",
-		"doubao_device_platform": "web", "aid": "495671", "real_aid": "495671",
-		"pkg_type": "release_version", "pc_version": "3.32.61", "doubao_pc_version": "3.32.61",
-		"region": "JP", "sys_region": "JP", "samantha_web": "1",
-		"web_platform": "browser", "use-olympus-account": "1", "web_tab_id": tabID,
+		"aid": "495671", "real_aid": "495671",
+		"device_id": device.DeviceID, "web_id": device.WebID, "tea_uuid": device.TeaUUID,
+		"device_platform": "web", "doubao_device_platform": "web",
+		"pc_version": clientPCVersion, "doubao_pc_version": clientPCVersion,
+		"pkg_type": "release_version",
+		// The client sends this one empty.
+		"language": "",
+		"region":   "JP", "sys_region": "JP",
+		"samantha_web": "1", "use-olympus-account": "1", "version_code": "20800",
+		"web_platform": "browser", "web_tab_id": tabID,
+		"tz_name": device.TZName,
 	} {
 		params.Set(k, v)
 	}
-	if token := cookieField(cookie, "msToken"); token != "" {
-		params.Set("msToken", token)
+
+	// The client sends the fingerprint it keeps in localStorage, which is not
+	// the same value as the s_v_web_id cookie; the captured request carried the
+	// localStorage one.
+	fp := device.Fingerprint
+	if fp == "" {
+		fp = cookieField(cookie, "s_v_web_id")
 	}
-	if fp := cookieField(cookie, "s_v_web_id"); fp != "" {
+	if fp != "" {
 		params.Set("fp", fp)
 	}
 	return params
@@ -514,7 +544,7 @@ const (
 	skillVideo = 17
 	// skillImage is image generation. The upstream Python used 16, which is
 	// SkillCodeAssistant: /samantha/skill/pack answers 710010702 for 16 and 0
-	// for 3, and the skill table reports 3 as "闂傚倷绶氬濠氭⒔閸曨垱鍋嬫繝濠傚濞呯娀鏌″搴″箺闁稿鍔戦弻锝夊籍閸屻倗鍔搁梺?. That Python branch had
+	// for 3, and the skill table reports 3 as "闂傚倸鍊搁崐椋庢濮橆剦鐒藉┑鐘崇閳锋棃鏌涢弴銊ョ仭闁稿顑嗙换婵囩節閸屾凹浠惧┑鐐叉噽婵炩偓闁哄备鈧剚鍚嬮幖绮光偓宕囶啈闂備胶顭堥鍐礉閹达箑钃熼柨婵嗩槸缁秹鏌涚仦璇测偓妤呭礉閹间焦鈷?. That Python branch had
 	// no callers, so it was never validated.
 	skillImage = 3
 )
@@ -629,7 +659,7 @@ func (u *Upstream) submitURL(cookie string) string {
 	// That is exactly the shape of a session that can be read but never writes,
 	// and the verifier flagged the missing msToken as higher captcha risk from
 	// the first run.
-	return u.base + "/chat/completion?" + sessionQuery(u.tabID, cookie).Encode()
+	return u.base + "/chat/completion?" + sessionQuery(u.tabID, cookie, u.device).Encode()
 }
 
 // buildSubmitBody renders the request the page sends for a video generation.
@@ -730,12 +760,12 @@ func readAck(r *bufio.Reader) (string, error) {
 // generate right now" codes.
 //
 // The name says rate, and the first reading of the evidence was that it was
-// about submit rate 閳?the failover burned three submits in a row and all three
+// about submit rate 闂?the failover burned three submits in a row and all three
 // were refused. Polling the one conversation that a submit did create showed
-// what is actually happening: the reply is 娴犲﹤銇夐惃鍕晸閹存劖顐奸弫绋垮嚒缂嶆捇浠堥崚棰佺瑐闂勬劧绱濋弰搴°亯閸愬秳绶犻崗宥堜笉閻㈢喐鍨氶崥?
+// what is actually happening: the reply is 婵炲濮撮敃銈夊Φ婢舵劖鍎嶉柛鏇ㄥ幗閺呮悂鏌熺€涙ê濮堟い鎰偢瀵偆绮欓崹顔兼缂傚倸绉甸幑鍥ㄧ閸儱绀嗗Λ棰佽兌閻熸劙姊婚崟顒€濮х紒杈ㄧ箞瀵増鎯旀幊娴滎垶鏌涢幇顒傂＄紒鍓佸█瀹曟顓奸崼婊呯憹闂佹眹鍨婚崰鎰板垂濮樿泛瑙?
 // the account's daily generation allowance is spent. That makes the codes a
-// per-account condition after all 閳?one session passed the submit layer while
-// three others were refused in the same minute 閳?so failing over is the right
+// per-account condition after all 闂?one session passed the submit layer while
+// three others were refused in the same minute 闂?so failing over is the right
 // response and is left in place.
 //
 // The codes are still classified, because the distinction is worth reporting:
@@ -746,7 +776,7 @@ var ErrUpstreamRateLimited = errors.New("upstream will not generate right now")
 
 // quotaCodes are the refusals that mean "not now, for this session".
 var quotaCodes = map[string]bool{
-	"710022002": true, // 閻╊喖澧犻張宥呭珡娴ｈ法鏁ゆ禍鐑樻毄鏉撳啫顦?閳?high demand
+	"710022002": true, // 闂佺儵鏅╅崰鏍ㄦ櫠閻樿瀚夌€广儱鎳庨悵鈥趁归敐鍫熺《闁轰降鍊栫粋宥夋倻濡粯鐦庨柡澶嬫尭閸燁偊藝?闂?high demand
 	"710022004": true, // shark_admin challenge, also returned once the daily allowance is spent
 }
 

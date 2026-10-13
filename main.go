@@ -158,6 +158,11 @@ func main() {
 	srv.reloadError = accounts.LastError
 
 	upstream := NewUpstream(egress)
+	if identity, err := LoadDeviceIdentity(cfg.DeviceFile, localTimezone()); err != nil {
+		log.Printf("device: %v", err)
+	} else {
+		upstream.device = identity
+	}
 	upstream.imageSkill = cfg.ImageAbility
 	exec, err := NewExecutor(cfg, upstream)
 	if err != nil {

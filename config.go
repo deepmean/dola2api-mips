@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -100,6 +101,10 @@ type Config struct {
 	// AccountsFile is the JSON list of upstream sessions. It is read at start
 	// and re-read on SIGHUP, so a session can be added without a restart.
 	AccountsFile string
+	// DeviceFile holds the stable identifiers the web client sends with every write.
+	// They are persisted because a device that presents a new identifier on every
+	// request is not a device.
+	DeviceFile string
 	// SessionWarnDays is how long before a session expires the service starts
 	// saying so. Nothing can refresh one: this account type logs in through a
 	// browser, so replacing the cookie is a human step.
@@ -257,6 +262,11 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if cfg.SubmitInterval, err = envDuration(getenv, "DOLA_SUBMIT_INTERVAL", defaultSubmitInterval); err != nil {
 		return Config{}, err
 	}
+	// Zero is meaningful: pace() reads it as "do not pace". Rejecting it would
+	// make the documented way to turn pacing off a startup failure.
+	if cfg.SubmitInterval < 0 {
+		return Config{}, fmt.Errorf("DOLA_SUBMIT_INTERVAL must be >= 0, got %s", cfg.SubmitInterval)
+	}
 	if cfg.ResetTZ, err = parseFixedZone(envOr(getenv, "DOLA_LIMIT_RESET_TZ", defaultResetTZ)); err != nil {
 		return Config{}, err
 	}
@@ -343,6 +353,12 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	cfg.AccountsFile = strings.TrimSpace(getenv("DOLA_ACCOUNTS_FILE"))
 	if cfg.AccountsFile == "" {
 		cfg.AccountsFile = defaultAccountsFile
+	}
+	// Default the device file next to the account file, so both live where the
+	// operator already looks.
+	cfg.DeviceFile = strings.TrimSpace(getenv("DOLA_DEVICE_FILE"))
+	if cfg.DeviceFile == "" {
+		cfg.DeviceFile = filepath.Join(filepath.Dir(cfg.AccountsFile), "device.json")
 	}
 	if cfg.SessionWarnDays, err = envInt(getenv, "DOLA_SESSION_WARN_DAYS", defaultSessionWarnDays); err != nil {
 		return Config{}, err

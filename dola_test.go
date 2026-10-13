@@ -9,6 +9,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -299,11 +303,11 @@ func TestSubmitURLCarriesNoSignature(t *testing.T) {
 	}
 }
 
-// msToken and fp come from the session, and the write paths must carry them the
-// way the read path always has. A session that can be read but never writes is
-// what a missing msToken looks like, and the verifier flagged it as higher
-// captcha risk from the first run.
-func TestWritePathsCarrySessionTokens(t *testing.T) {
+// The write paths must send the parameter set the client sends, which was
+// captured from the browser while it was answering normally. The port sent
+// eleven of these twenty, plus a channel the client does not send, plus a
+// language the client leaves empty, and every write was refused.
+func TestWritePathsSendTheClientParameterSet(t *testing.T) {
 	egress, err := NewEgress(Config{EgressMode: "direct"})
 	if err != nil {
 		t.Fatalf("NewEgress: %v", err)
@@ -311,24 +315,92 @@ func TestWritePathsCarrySessionTokens(t *testing.T) {
 	defer egress.Close()
 
 	u := NewUpstream(egress)
-	const cookie = "sessionid=x; msToken=TOKEN-VALUE; s_v_web_id=verify_abc"
+	u.device = DeviceIdentity{
+		DeviceID: "7686671608228726325", WebID: "7695956629460485685",
+		TeaUUID: "7695956629460485685", Fingerprint: "verify_abc", TZName: "Asia/Shanghai",
+	}
+	const cookie = "sessionid=x; msToken=TOKEN-VALUE; s_v_web_id=verify_from_cookie"
 
-	for name, target := range map[string]string{
-		"submit": u.submitURL(cookie),
-		"chat":   u.submitURL(cookie),
-	} {
-		if !strings.Contains(target, "msToken=TOKEN-VALUE") {
-			t.Errorf("the %s URL does not carry msToken: %s", name, target)
-		}
-		if !strings.Contains(target, "fp=verify_abc") {
-			t.Errorf("the %s URL does not carry fp: %s", name, target)
+	target := u.submitURL(cookie)
+	parsed, err := url.Parse(target)
+	if err != nil {
+		t.Fatalf("the URL does not parse: %v", err)
+	}
+	got := parsed.Query()
+
+	// Every parameter the captured request carried.
+	want := map[string]string{
+		"aid": "495671", "real_aid": "495671",
+		"device_id":       "7686671608228726325",
+		"web_id":          "7695956629460485685",
+		"tea_uuid":        "7695956629460485685",
+		"device_platform": "web", "doubao_device_platform": "web",
+		"pc_version": clientPCVersion, "doubao_pc_version": clientPCVersion,
+		"pkg_type": "release_version", "language": "",
+		"region": "JP", "sys_region": "JP",
+		"samantha_web": "1", "use-olympus-account": "1", "version_code": "20800",
+		"web_platform": "browser", "tz_name": "Asia/Shanghai",
+		"fp": "verify_abc",
+	}
+	for k, v := range want {
+		if got.Get(k) != v {
+			t.Errorf("%s = %q, want %q", k, got.Get(k), v)
 		}
 	}
+	if len(got) != len(want)+1 { // + web_tab_id, which is generated per call
+		t.Errorf("the URL carries %d parameters, want %d: %v", len(got), len(want)+1, got)
+	}
 
-	// A session without them must not invent empty ones.
-	bare := u.submitURL("sessionid=x")
-	if strings.Contains(bare, "msToken=") || strings.Contains(bare, "fp=") {
-		t.Errorf("an empty token was sent: %s", bare)
+	// msToken travels as a cookie. The captured request did not carry it in the
+	// query even though the session had one, so putting it there was this port's
+	// own invention.
+	if got.Has("msToken") {
+		t.Error("msToken is in the query, which the client does not do")
+	}
+	// The client does not send channel.
+	if got.Has("channel") {
+		t.Error("the URL carries channel, which the client does not send")
+	}
+	// The fingerprint is the one from the device, not the cookie's.
+	if got.Get("fp") == "verify_from_cookie" {
+		t.Error("the cookie's s_v_web_id was used as the fingerprint")
+	}
+}
+
+// A device identity that has not been created yet must still produce a usable
+// request rather than one with empty identifiers.
+func TestDeviceIdentityIsGeneratedAndPersisted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "device.json")
+
+	first, err := LoadDeviceIdentity(path, "Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("LoadDeviceIdentity: %v", err)
+	}
+	if len(first.DeviceID) != 19 || len(first.WebID) != 19 || len(first.TeaUUID) != 19 {
+		t.Errorf("the generated identifiers are not 19-digit numbers: %+v", first)
+	}
+	if !strings.HasPrefix(first.Fingerprint, "verify_") {
+		t.Errorf("fingerprint = %q", first.Fingerprint)
+	}
+
+	// A second load must return the same identity: a device that presents a new
+	// identifier on every request is not a device.
+	second, err := LoadDeviceIdentity(path, "Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("second LoadDeviceIdentity: %v", err)
+	}
+	if second != first {
+		t.Errorf("the identity changed between loads:\n %+v\n %+v", first, second)
+	}
+
+	// And it must be private: it is part of how the upstream recognises this
+	// deployment.
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %o, want 600", info.Mode().Perm())
 	}
 }
 
