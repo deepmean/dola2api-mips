@@ -120,13 +120,25 @@ func TestRetrieverMirrorDownloadsOnceAndReuses(t *testing.T) {
 func TestRetrieverMirrorSweepsExpiredFiles(t *testing.T) {
 	cdn := cdnServer(t, "VIDEO-BYTES", http.StatusOK)
 	dir := t.TempDir()
-	r := newTestRetriever(t, Config{StoreMode: "mirror", MirrorDir: dir, MirrorTTL: time.Nanosecond}, cdn)
+	// A long TTL, so the opportunistic sweep inside ensureMirror cannot remove
+	// the file before the assertion runs. Expiry is then forced by backdating
+	// the entry, which makes the test independent of timing.
+	r := newTestRetriever(t, Config{StoreMode: "mirror", MirrorDir: dir, MirrorTTL: time.Hour}, cdn)
 
 	rec := httptest.NewRecorder()
 	if err := r.Deliver(context.Background(), rec, Video{UnwatermarkedURL: cdn.URL + "/a.mp4"}); err != nil {
 		t.Fatalf("Deliver: %v", err)
 	}
-	time.Sleep(2 * time.Millisecond)
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Fatalf("mirror dir has %d entries before the sweep, want 1", len(entries))
+	}
+
+	r.mu.Lock()
+	for key, entry := range r.mirrors {
+		entry.fetchedAt = time.Now().Add(-2 * time.Hour)
+		r.mirrors[key] = entry
+	}
+	r.mu.Unlock()
 
 	if removed := r.Sweep(); removed != 1 {
 		t.Errorf("Sweep removed %d file(s), want 1", removed)
