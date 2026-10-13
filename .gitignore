@@ -36,3 +36,8 @@ spikes/captured_submit_url.txt
 spikes/tls_impersonate_result.json
 spikes/tls_after_browser.json
 spikes/poll_check_result.json
+spikes/bdms-sdk.js
+spikes/public/
+spikes/goja_probe/
+spikes/abogus_probe/
+spikes/abogus_submit/
