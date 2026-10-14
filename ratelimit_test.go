@@ -234,7 +234,10 @@ func TestPoolPacesSubmits(t *testing.T) {
 		t.Fatalf("submits = %d, want 2", len(stamps))
 	}
 	gap := stamps[1].Sub(stamps[0])
-	if gap < interval {
+	// A little tolerance: the timer fires at the interval and the two timestamps
+	// are taken either side of the actual request, so the gap lands on the
+	// boundary and clock granularity can put it a hair under.
+	if tolerance := 20 * time.Millisecond; gap < interval-tolerance {
 		t.Errorf("the two submits were %s apart, want at least %s", gap.Round(time.Millisecond), interval)
 	}
 }

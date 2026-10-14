@@ -113,9 +113,14 @@ func (a *api) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	result, err := a.upstream.Chat(ctx, account.Cookie, ChatRequest{Prompt: prompt}, a.cfg.DeepThinkValue)
 	if err != nil {
-		// A refusal or a transport failure is the account's problem as much as
-		// the request's, so it is parked like a failed submit would be.
-		a.accounts.RecordFailure(account, time.Now(), err)
+		// Only park the session when the session is what failed. An
+		// upstream-wide refusal parks every session in turn until the pool is
+		// empty, and the service then reports "no session available" — a symptom
+		// that hides its own cause. Both chat paths must agree about this, which
+		// is what the streaming path already does.
+		if !errors.Is(err, ErrUpstreamRateLimited) {
+			a.accounts.RecordFailure(account, time.Now(), err)
+		}
 		writeError(w, http.StatusBadGateway, err.Error(), "chat_failed")
 		return
 	}

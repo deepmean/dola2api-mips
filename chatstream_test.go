@@ -399,6 +399,42 @@ func TestChatRefusalOfALoginFailureIsNotUpstreamWide(t *testing.T) {
 	}
 }
 
+// Both chat paths must leave the sessions alone for an upstream-wide refusal.
+//
+// The first attempt at this fixed the streaming path only, and a request with
+// stream=false parked a session anyway — which is why this test drives the HTTP
+// endpoint rather than the reader underneath it.
+func TestBothChatPathsLeaveSessionsAloneForAnUpstreamRefusal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(frame(0, "STREAM_ERROR", `{"error_code":710022004,"error_msg":"refused"}`)))
+	}))
+	defer srv.Close()
+
+	for _, stream := range []string{"false", "true"} {
+		exec := &fakeExecutor{conversationID: "conv-1"}
+		api, _, accounts := newTestAPI(t, exec, Config{ChatTimeout: 20 * time.Second})
+		egress, err := NewEgress(Config{EgressMode: "direct", FirstByteTimeout: 5 * time.Second})
+		if err != nil {
+			t.Fatalf("NewEgress: %v", err)
+		}
+		defer egress.Close()
+		up := NewUpstream(egress)
+		up.base = srv.URL
+		api.upstream = up
+
+		rec := doRequest(t, apiRouter(api), http.MethodPost, "/v1/chat/completions",
+			`{"stream":`+stream+`,"messages":[{"role":"user","content":"hi"}]}`, "sk-test")
+		if rec.Code != http.StatusBadGateway {
+			t.Errorf("stream=%s: status = %d, want 502: %s", stream, rec.Code, rec.Body.String())
+		}
+		if !accounts.Available(time.Now()) {
+			t.Errorf("stream=%s parked the session for an upstream-wide refusal, which drains "+
+				"the pool and turns a clear cause into 'no session available'", stream)
+		}
+	}
+}
+
 func TestChatStreamIgnoresUnreadableFrames(t *testing.T) {
 	result := readStream(t, frame(0, "STREAM_CHUNK", "not json")+
 		frame(1, "STREAM_CHUNK", `{"content":{"content_block":[{"block_type":10000,"content":{"text_block":{"text":"ok"}}}]}}`))
