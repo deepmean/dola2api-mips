@@ -368,6 +368,37 @@ func TestChatStreamRequiresAConsumer(t *testing.T) {
 	}
 }
 
+// The chat path must classify a refusal the same way the submit path does.
+//
+// Missing this is what left a client with "no session available" while all four
+// sessions were fine: the refusal was treated as a per-session fault, every
+// session was parked in turn, and the pool drained.
+func TestChatRefusalIsClassifiedAsUpstreamWide(t *testing.T) {
+	for _, code := range []string{"710022002", "710022004"} {
+		stream := frame(0, "STREAM_ERROR", `{"error_code":`+code+`,"error_msg":"refused"}`)
+		_, err := readChatStream(bufio.NewReader(strings.NewReader(stream)), nil)
+		if err == nil {
+			t.Fatalf("%s was reported as success", code)
+		}
+		if !errors.Is(err, ErrUpstreamRateLimited) {
+			t.Errorf("%s was not classified as upstream-wide on the chat path: %v", code, err)
+		}
+	}
+}
+
+// A per-session refusal on the chat path must not be classified that way, or a
+// genuinely broken session would never be parked.
+func TestChatRefusalOfALoginFailureIsNotUpstreamWide(t *testing.T) {
+	stream := frame(0, "STREAM_ERROR", `{"error_code":712012001,"error_msg":"login invalid"}`)
+	_, err := readChatStream(bufio.NewReader(strings.NewReader(stream)), nil)
+	if err == nil {
+		t.Fatal("a refusal was reported as success")
+	}
+	if errors.Is(err, ErrUpstreamRateLimited) {
+		t.Errorf("a login failure was classified as upstream-wide: %v", err)
+	}
+}
+
 func TestChatStreamIgnoresUnreadableFrames(t *testing.T) {
 	result := readStream(t, frame(0, "STREAM_CHUNK", "not json")+
 		frame(1, "STREAM_CHUNK", `{"content":{"content_block":[{"block_type":10000,"content":{"text_block":{"text":"ok"}}}]}}`))

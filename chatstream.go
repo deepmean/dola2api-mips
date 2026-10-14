@@ -265,6 +265,12 @@ func applyChatFrame(event, data string, result *ChatResult, text *strings.Builde
 }
 
 // chatRefusal reads a refusal in either of the shapes the endpoint uses.
+//
+// The codes are classified the same way the submit path classifies them: a
+// refusal that is about the upstream must not be reported as a per-session
+// fault, or every session gets parked in turn until the pool is empty. Missing
+// this on the chat path is what left a client with "no session available" while
+// all four sessions were fine.
 func chatRefusal(data string) error {
 	code := digAny(data, "error_code")
 	msg := digString(data, "error_msg")
@@ -281,7 +287,11 @@ func chatRefusal(data string) error {
 	if code == nil && msg == "" {
 		return errors.New("chat: upstream refused with an unreadable error")
 	}
-	return fmt.Errorf("chat: upstream refused: %s %s", formatErrorCode(code), msg)
+	formatted := formatErrorCode(code)
+	if quotaCodes[formatted] {
+		return fmt.Errorf("%w: %s %s", ErrUpstreamRateLimited, formatted, msg)
+	}
+	return fmt.Errorf("chat: upstream refused: %s %s", formatted, msg)
 }
 
 // chatBlocks collects content blocks from every place the endpoint puts them.
