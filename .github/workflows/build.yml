@@ -74,11 +74,16 @@ jobs:
       #
       # Test files are excluded on purpose: they legitimately dial local
       # httptest listeners, which is not outbound traffic to the upstream.
+      #
+      # spikes/ is excluded too. It is a separate module holding research
+      # probes, and several of them exist precisely to dial the upstream
+      # directly and compare the result with the relay's. Holding the probes to
+      # the shipped code's rule would make the rule impossible to investigate.
       - name: Assert no bypass of the egress layer
         run: |
           set -eu
           hits=$(grep -rIn --include='*.go' --exclude='*_test.go' -E 'http\.Transport\{|net\.Dial\(' . \
-                 | grep -v '/egress' || true)
+                 | grep -v '/egress' | grep -v '/spikes/' || true)
           if [ -n "$hits" ]; then
             echo 'FAIL: outbound HTTP outside the egress layer:'
             echo "$hits"
