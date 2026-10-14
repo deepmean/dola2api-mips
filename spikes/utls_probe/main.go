@@ -65,6 +65,10 @@ func main() {
 	prompt := flag.String("prompt", "用一句话介绍你自己", "message to send")
 	direct := flag.Bool("direct", false, "connect to the upstream directly instead of through the relay")
 	timeout := flag.Duration("timeout", 90*time.Second, "request timeout")
+	// signedURL sends an exact URL, signature and all. It is how the one
+	// combination that was never tested gets tested: a browser TLS fingerprint
+	// carrying a signature the page itself produced.
+	signedURL := flag.String("url", "", "send this exact URL instead of building one")
 	flag.Parse()
 
 	hello, ok := hellos[*helloName]
@@ -96,8 +100,22 @@ func main() {
 	}
 
 	target := "https://" + host + "/"
+	relayPath := "/chat/completion?" + clientQuery()
 	if *direct {
 		target = "https://www.dola.com/chat/completion?" + clientQuery()
+	}
+	if *signedURL != "" {
+		// An exact signed URL goes through the relay, because the relay is what
+		// reaches the upstream; only the query is carried over.
+		parsed, err := url.Parse(*signedURL)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "url: %v\n", err)
+			os.Exit(1)
+		}
+		relayPath = parsed.Path + "?" + parsed.RawQuery
+		if *direct {
+			target = "https://www.dola.com" + relayPath
+		}
 	}
 	req, err := http.NewRequest(http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
@@ -127,7 +145,7 @@ func main() {
 	req.Header.Set("Cookie", cookie)
 	if !*direct {
 		req.Header.Set("x-relay-target", "https://www.dola.com")
-		req.Header.Set("x-relay-path", "/chat/completion?"+clientQuery())
+		req.Header.Set("x-relay-path", relayPath)
 	}
 
 	started := time.Now()
