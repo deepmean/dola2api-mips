@@ -23,6 +23,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import uuid
 
 RELAY = "https://vcrelay.dmean.dpdns.org/"
 TARGET_HOST = "www.dola.com"
@@ -33,7 +34,7 @@ UA = (
 
 BODY = {
     "client_meta": {
-        "local_conversation_id": f"local_{int(time.time() * 1000)}",
+        "local_conversation_id": f"local_{uuid.uuid4()}",
         "conversation_id": "",
         "bot_id": "7339470689562525703",
         "last_section_id": "",
@@ -41,7 +42,7 @@ BODY = {
     },
     "messages": [
         {
-            "local_message_id": "11111111-2222-3333-4444-555555555555",
+            "local_message_id": str(uuid.uuid4()),
             "content_block": [
                 {
                     "block_type": 10000,
@@ -54,7 +55,7 @@ BODY = {
                         },
                         "pc_event_block": "",
                     },
-                    "block_id": "66666666-7777-8888-9999-000000000000",
+                    "block_id": str(uuid.uuid4()),
                     "parent_id": "",
                     "meta_info": [],
                     "append_fields": [],
@@ -81,7 +82,7 @@ BODY = {
         "is_select_text": False,
         "resend_for_regen": False,
         "scene_type": 0,
-        "unique_key": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "unique_key": str(uuid.uuid4()),
         "start_seq": 0,
         "need_create_conversation": True,
         "conversation_init_option": {"need_ack_conversation": True},
@@ -127,14 +128,21 @@ def main() -> int:
     cookie = read_cookie(sys.argv[1])
     print(f"cookie: {len(cookie)} chars")
 
+    # Every request needs its own ids. Reusing them is what produces
+    # 710020702 is_replay, which is the server refusing the request rather than
+    # the signature.
     proc = subprocess.run(
-        ["node", "sign-port.js"], capture_output=True, text=True, check=True
+        ["node", "sign-port.js", str(uuid.uuid4()), str(uuid.uuid4())],
+        capture_output=True,
+        text=True,
+        check=True,
     )
     signed = json.loads(proc.stdout.strip().splitlines()[-1])
     print(f"a_bogus: {signed['len']} chars in {signed['elapsed']} ms")
 
-    query = signed["sorted"] + "&msToken=" + urllib.parse.quote("TESTTOKEN123") + \
-        "&a_bogus=" + urllib.parse.quote(signed["sig"])
+    # The signed query already contains msToken, so it is not appended again
+    # here: the signature has to cover the string that actually goes on the wire.
+    query = signed["sorted"] + "&a_bogus=" + urllib.parse.quote(signed["sig"])
 
     req = urllib.request.Request(RELAY, method="POST")
     req.add_header("x-relay-target", f"https://{TARGET_HOST}")
