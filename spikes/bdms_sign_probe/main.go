@@ -147,6 +147,34 @@ func main() {
   }
   out.after = describeXHR();
 
+  // The SDK captures the transport at load, so a hook installed afterwards can
+  // never see it. Here it is loaded after the stubs, so whatever it did to
+  // XMLHttpRequest is already on the table. Look at the constructor: if the SDK
+  // swapped it for its own class, that class is where the signing lives, and its
+  // prototype is reachable.
+  try {
+    var C = window.XMLHttpRequest;
+    var p = C && C.prototype;
+    var own = [];
+    if (p) {
+      for (var k in p) own.push(k);
+      own.sort();
+    }
+    var statics = [];
+    if (C) {
+      for (var kk in C) if (typeof C[kk] === "function") statics.push(kk);
+    }
+    out.xhr = {
+      ctorName: C && C.name,
+      ctorSrc: C ? String(C).slice(0, 160) : null,
+      protoOwn: own,
+      statics: statics,
+      isNativeish: C ? (String(C).indexOf("[native code]") >= 0) : null
+    };
+  } catch (e) {
+    out.steps.push("xhr inspect threw: " + (e && e.message ? e.message : e));
+  }
+
   // The interceptor stays inert, so try the exported signer directly. A valid
   // a_bogus is 188-196 characters while X-Bogus is 16, so the length alone says
   // which one came back.
@@ -155,6 +183,7 @@ func main() {
     out.signs = {};
     var shapes = {
       query: QUERY,
+      sortedQuery: QUERY.split("&").sort().join("&"),
       pathQuery: "/chat/completion?" + QUERY,
       fullUrl: "https://www.dola.com/chat/completion?" + QUERY,
       stub: { "X-MS-STUB": QUERY }
