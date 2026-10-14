@@ -85,10 +85,34 @@ func main() {
 (function () {
   var out = { steps: [] };
   var ac = window.byted_acrawler;
-  try { ac.init({ aid: 495671, dfp: false }); out.steps.push("init ok"); }
-  catch (e) { out.steps.push("init threw: " + (e && e.message ? e.message : e)); }
+  // The page's own config, recovered from the bundle:
+  //   let c = { aid, pageId, paths, ic, ddrt }; window.bdms.init(c);
+  // with pageId 26930 and the paths the app signs. A bare {aid} left the
+  // interceptor installed but inactive, which is why nothing was appended.
+  var cfg = {
+    aid: 495671,
+    pageId: 26930,
+    ic: 13,
+    ddrt: 13,
+    paths: {
+      include: ["/alice", "/samantha", "/passport", "/biz",
+                "/chat/completion", "/chat/async/chunk_stream"],
+      exclude: ["/samantha/notice/info", "/samantha/user/preference/get",
+                "/samantha/user/ab/get", "/samantha/plugin/recommend/webtodesktop",
+                "/samantha/guidance/get_task", "/samantha/guidance/draw_result"]
+    }
+  };
+  try { ac.init(cfg); out.steps.push("init cfg ok"); }
+  catch (e) { out.steps.push("init cfg threw: " + (e && e.message ? e.message : e)); }
   try { ac.setTTWid(""); out.steps.push("setTTWid ok"); } catch (e) {}
   try { ac.setUserMode(0); } catch (e) {}
+  try { ac.setConfig && ac.setConfig("aid", 495671); } catch (e) {}
+
+  // The bootstrap endpoints are obfuscated strings, so they cannot be found by
+  // searching the source. If the SDK issues them itself, the recording stubs
+  // see them: dump everything that arrived before this probe made any call of
+  // its own.
+  out.bootstrap = (window.__calls || []).slice();
 
   var query = "aid=495671&channel=g&device_platform=web&version_code=20800&web_platform=browser&msToken=TESTTOKEN%3D";
   var shapes = {
