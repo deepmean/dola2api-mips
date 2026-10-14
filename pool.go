@@ -50,7 +50,7 @@ var ErrPoolClosed = errors.New("pool: closed")
 //
 // The concurrency bound is deliberate rather than incidental: the target router
 // has 250MB of RAM and the upstream rate-limits anyway, so a second worker buys
-// nothing and costs memory. The pending bound exists for the same reason 闁?a
+// nothing and costs memory. The pending bound exists for the same reason 闂?a
 // queue that grows without limit is a way to run out of memory from the outside.
 type Pool struct {
 	cfg      Config
@@ -276,7 +276,7 @@ func (p *Pool) run(ctx context.Context, task *Task) {
 			if lastErr != nil {
 				p.fail(task, fmt.Errorf("every session failed (tried %d); last error: %w", attempt-1, lastErr))
 			} else {
-				p.fail(task, fmt.Errorf("no session available: %w", err))
+				p.fail(task, fmt.Errorf("no session available: %w", p.accounts.NoSessionError()))
 			}
 			return
 		}

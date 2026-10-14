@@ -42,6 +42,7 @@ func (a *api) registerAdmin(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin", a.handlePanel)
 	mux.HandleFunc("GET /admin/status", a.withAdmin(a.handleAdminStatus))
 	mux.HandleFunc("POST /admin/reload", a.withAdmin(a.handleAdminReload))
+	mux.HandleFunc("POST /admin/reset", a.withAdmin(a.handleAdminReset))
 	mux.HandleFunc("GET /admin/tasks", a.withAdmin(a.handleAdminTasks))
 	mux.HandleFunc("POST /admin/accounts", a.withAdmin(a.handleAddAccount))
 	mux.HandleFunc("DELETE /admin/accounts/{label}", a.withAdmin(a.handleRemoveAccount))
@@ -180,6 +181,24 @@ func (a *api) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 // SIGHUP does the same thing, but the operator may be reaching the service over
 // the network where sending a signal means an ssh session, and a reload that
 // can be triggered by an authenticated request is easier to script.
+// handleAdminReset releases every parked session.
+//
+// The pool parks sessions one after another when the refusal is about the
+// upstream rather than any session, until nothing is available and the service
+// reports "no session available" — a symptom that hides its own cause. This is
+// the operator saying "the cause is dealt with, try now", which is otherwise
+// only expressible by waiting out an exponential backoff.
+func (a *api) handleAdminReset(w http.ResponseWriter, r *http.Request) {
+	if a.accounts == nil {
+		writeError(w, http.StatusServiceUnavailable, "no account store", "no_accounts")
+		return
+	}
+	cleared := a.accounts.ClearCooldowns()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "cleared": cleared, "accounts": len(a.accounts.Cookies()),
+	})
+}
+
 func (a *api) handleAdminReload(w http.ResponseWriter, r *http.Request) {
 	if a.accounts == nil {
 		writeError(w, http.StatusServiceUnavailable, "no account store", "no_accounts")

@@ -46,6 +46,7 @@
   <span class="spacer"></span>
   <input id="key" type="password" placeholder="管理员密钥（存在浏览器本地）" style="width:260px">
   <button id="save">保存密钥</button>
+  <button id="reset" class="ghost">清除冷却</button>
   <button id="refresh" class="ghost">刷新</button>
 </header>
 
@@ -165,6 +166,18 @@ $('save').onclick = () => {
 };
 
 $('refresh').onclick = load;
+
+// The pool parks sessions one after another when the refusal is about the
+// upstream rather than any session, and then reports "no session available" —
+// which hides the cause. This is the operator saying "the cause is dealt with".
+$('reset').onclick = async () => {
+  const r = await api('/admin/reset', { method: 'POST' });
+  $('msg').textContent = r.status === 200
+    ? ('已释放 ' + r.body.cleared + ' 个冷却中的账号')
+    : ('失败: ' + (r.body.error || r.status));
+  $('msg').className = r.status === 200 ? 'ok' : 'err';
+  load();
+};
 
 $('add').onclick = async () => {
   const cookie = $('cookie').value.trim();

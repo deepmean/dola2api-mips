@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -223,7 +224,7 @@ func verificationServer(t *testing.T, live bool) *httptest.Server {
 			return
 		}
 		_, _ = w.Write([]byte(`{"cmd":3200,"downlink_body":{},"version":"1",` +
-			`"status_code":712012001,"status_desc":"鐧诲綍鏍￠獙涓嶅悎娉?,"ext":{"tt_stable":"0"}}`))
+			`"status_code":712012001,"status_desc":"閻ц缍嶉弽锟犵崣娑撳秴鎮庡▔?,"ext":{"tt_stable":"0"}}`))
 	}))
 	t.Cleanup(srv.Close)
 	return srv
@@ -287,6 +288,115 @@ func TestVerifySessionRejectsACookieWithoutASession(t *testing.T) {
 	}
 }
 
+// A refusal that is about the upstream parks every session in turn until the
+// pool is empty, and the service then reports "no session available" 鈥?a symptom
+// that hides its own cause. Two things follow: the operator needs a way to say
+// "the cause is dealt with", and the error has to name the cause.
+func TestClearCooldownsReleasesParkedSessions(t *testing.T) {
+	cfg := testAccountsConfig(t)
+	cfg.CooldownSec = 600
+	writeAccounts(t, cfg, `[{"label":"a","cookie":"sessionid=aaa"},{"label":"b","cookie":"sessionid=bbb"}]`)
+	store := NewAccountStore(cfg)
+	if err := store.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	now := time.Now()
+	for _, label := range []string{"a", "b"} {
+		account, err := store.Pick(now)
+		if err != nil {
+			t.Fatalf("Pick: %v", err)
+		}
+		_ = label
+		store.RecordFailure(account, now, errTest)
+	}
+	if store.Available(now) {
+		t.Fatal("the sessions were not parked, so this test proves nothing")
+	}
+
+	cleared := store.ClearCooldowns()
+	if cleared != 2 {
+		t.Errorf("cleared = %d, want 2", cleared)
+	}
+	if !store.Available(now) {
+		t.Error("nothing is available after clearing the cooldowns")
+	}
+	// The backoff must be reset too, or the next failure parks them for longer
+	// than the first one did.
+	account, err := store.Pick(now)
+	if err != nil {
+		t.Fatalf("Pick after reset: %v", err)
+	}
+	store.RecordFailure(account, now, errTest)
+	entry := store.Health(now)[0].(map[string]any)
+	if remaining := entry["cooldown_remaining"].(int); remaining > cfg.CooldownSec+1 {
+		t.Errorf("cooldown = %ds after a reset, want about %ds: the backoff was not cleared",
+			remaining, cfg.CooldownSec)
+	}
+}
+
+func TestNoSessionErrorNamesTheLastRefusal(t *testing.T) {
+	cfg := testAccountsConfig(t)
+	cfg.CooldownSec = 600
+	writeAccounts(t, cfg, `[{"label":"a","cookie":"sessionid=aaa"}]`)
+	store := NewAccountStore(cfg)
+	if err := store.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	now := time.Now()
+	account, err := store.Pick(now)
+	if err != nil {
+		t.Fatalf("Pick: %v", err)
+	}
+	store.RecordFailure(account, now, errors.New("upstream refused: 710022004"))
+
+	explained := store.NoSessionError()
+	if !errors.Is(explained, ErrNoAccount) {
+		t.Errorf("the error no longer matches ErrNoAccount: %v", explained)
+	}
+	if !strings.Contains(explained.Error(), "710022004") {
+		t.Errorf("the error does not name the upstream refusal: %v", explained)
+	}
+	if !strings.Contains(explained.Error(), "parked") {
+		t.Errorf("the error does not say what happened: %v", explained)
+	}
+}
+
+func TestAdminResetReleasesCooldownsAndNeedsTheAdminKey(t *testing.T) {
+	exec := &fakeExecutor{conversationID: "conv-1"}
+	api, _, accounts := newTestAPI(t, exec, Config{})
+	if err := accounts.Upsert("extra", "sessionid=extra"); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	now := time.Now()
+	for {
+		account, err := accounts.Pick(now)
+		if err != nil {
+			break
+		}
+		accounts.RecordFailure(account, now, errors.New("refused"))
+	}
+	if accounts.Available(now) {
+		t.Fatal("the sessions were not parked, so this test proves nothing")
+	}
+
+	router := apiRouter(api)
+	if rec := doRequest(t, router, http.MethodPost, "/admin/reset", "", "sk-test"); rec.Code != http.StatusUnauthorized {
+		t.Errorf("an ordinary API key cleared the cooldowns: status %d", rec.Code)
+	}
+
+	rec := doRequest(t, router, http.MethodPost, "/admin/reset", "", "admin-test")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body["cleared"] == nil || body["cleared"].(float64) < 1 {
+		t.Errorf("the response does not say what was cleared: %s", rec.Body.String())
+	}
+	if !accounts.Available(time.Now()) {
+		t.Error("nothing is available after a reset")
+	}
+}
 func TestPanelIsServedAndCarriesNoSecrets(t *testing.T) {
 	exec := &fakeExecutor{conversationID: "conv-1"}
 	api, _, _ := newTestAPI(t, exec, Config{})

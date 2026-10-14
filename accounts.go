@@ -30,6 +30,9 @@ type Account struct {
 	usedOn        time.Time // midnight of the day usedToday belongs to
 	cooldownUntil time.Time
 	lastError     string
+	// lastFailureAt is when lastError was recorded, so the pool can say which
+	// refusal is the most recent one.
+	lastFailureAt time.Time
 	lastOK        time.Time
 	// expiresAt is when the session itself dies, read from sid_guard. The zero
 	// value means the cookie did not say.
@@ -629,7 +632,60 @@ func (s *AccountStore) RecordFailure(a *Account, now time.Time, cause error) {
 	a.cooldownUntil = now.Add(base * multiplier)
 	if cause != nil {
 		a.lastError = cause.Error()
+		a.lastFailureAt = now
 	}
+}
+
+// ClearCooldowns releases every parked session and reports how many were parked.
+//
+// A refusal that is about the upstream rather than any one session parks each
+// session in turn until the pool is empty, and the service then answers "no
+// session available" — which hides the cause behind a symptom. An operator who
+// has dealt with the cause, or who simply wants to try again, needs to say so
+// without waiting out a backoff that was never about these sessions.
+func (s *AccountStore) ClearCooldowns() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cleared := 0
+	for _, a := range s.accounts {
+		if !a.cooldownUntil.IsZero() && time.Now().Before(a.cooldownUntil) {
+			cleared++
+		}
+		a.cooldownUntil = time.Time{}
+		a.consecutiveFailures = 0
+	}
+	return cleared
+}
+
+// NoSessionError explains why nothing is available.
+//
+// "none available" on its own sends the reader looking for a configuration
+// problem, when the usual cause is that every session was parked by the same
+// upstream refusal. Naming that refusal is the difference between a five-minute
+// diagnosis and an hour of it.
+func (s *AccountStore) NoSessionError() error {
+	if last := s.LastFailure(); last != "" {
+		return fmt.Errorf("%w (every session is parked; last upstream error: %s)", ErrNoAccount, last)
+	}
+	return ErrNoAccount
+}
+
+// LastFailure reports the most recent upstream error across the pool, which is
+// what "no session available" ought to be explaining.
+func (s *AccountStore) LastFailure() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	latest := ""
+	var at time.Time
+	for _, a := range s.accounts {
+		if a.lastError == "" {
+			continue
+		}
+		if latest == "" || a.lastFailureAt.After(at) {
+			latest, at = a.lastError, a.lastFailureAt
+		}
+	}
+	return latest
 }
 
 // LastError reports the most recent load problem, for /health.

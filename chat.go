@@ -104,7 +104,7 @@ func (a *api) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	account, err := a.accounts.Pick(time.Now())
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "no session available: "+err.Error(), "no_session")
+		writeError(w, http.StatusServiceUnavailable, "no session available: "+a.accounts.NoSessionError().Error(), "no_session")
 		return
 	}
 
@@ -180,7 +180,7 @@ func (a *api) handleChatStream(w http.ResponseWriter, r *http.Request, prompt, m
 
 	account, err := a.accounts.Pick(time.Now())
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "no session available: "+err.Error(), "no_session")
+		writeError(w, http.StatusServiceUnavailable, "no session available: "+a.accounts.NoSessionError().Error(), "no_session")
 		return
 	}
 
