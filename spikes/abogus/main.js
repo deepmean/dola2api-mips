@@ -41,10 +41,10 @@ for (const f of files) {
 // The page builds its query alphabetically before signing, so the signature
 // covers the same string the server reassembles.
 // The recovered algorithm ships with the constants of the site it was taken
-// from: aid 6383, pageId 7571. dola signs with its own, so they are set here
-// before signing. Whether these are the only two that differ is exactly what the
-// live test decides.
-vm.runInContext("aid = 495671; pageId = 26930;", ctx);
+// from. The three that feed the signature are the app id, the page id and the
+// SDK version, and the version is readable straight off the file name dola
+// serves its SDK under: webmssdk_1.0.0.44.es5.js.
+vm.runInContext("aid = 495671; pageId = 26930; sdkVersion = '1.0.0.44';", ctx);
 
 // The signature covers the exact query that will be sent, so the ids the
 // verifier generates have to go into the signed string too. That is why they
