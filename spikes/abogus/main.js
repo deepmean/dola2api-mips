@@ -46,6 +46,12 @@ for (const f of files) {
 // live test decides.
 vm.runInContext("aid = 495671; pageId = 26930;", ctx);
 
+// The signature covers the exact query that will be sent, so the ids the
+// verifier generates have to go into the signed string too. That is why they
+// arrive as arguments rather than being minted here.
+const tabId = process.argv[2] || require("crypto").randomUUID();
+void process.argv[3];
+
 const params = {
   aid: "495671",
   device_id: "7686671608228726325",
@@ -66,9 +72,20 @@ const params = {
   version_code: "20800",
   web_id: "7695956629460485685",
   web_platform: "browser",
-  web_tab_id: require("crypto").randomUUID()
+  web_tab_id: tabId
 };
-const sorted = Object.keys(params).sort().map((k) => `${k}=${params[k]}`).join("&");
+// msToken is part of the query the page signs, not something added afterwards:
+// the signed string and the string that goes on the wire have to be the same
+// string. It goes in before the parameters are sorted.
+const msToken = process.env.ABOGUS_MS_TOKEN || "TESTTOKEN123";
+delete params["msToken"];
+
+const sorted = Object.keys(params)
+  .sort()
+  .map((k) => `${k}=${params[k]}`)
+  .concat([`msToken=${msToken}`])
+  .sort()
+  .join("&");
 
 const t0 = Date.now();
 const sig = vm.runInContext(`makeABogus(${JSON.stringify(sorted)}, Date.now())`, ctx);
