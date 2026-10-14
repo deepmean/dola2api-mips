@@ -15,8 +15,8 @@ import (
 // ChatRequest is one text turn.
 type ChatRequest struct {
 	Prompt string
-	// DeepThink asks for the reasoning pass. The wire value is uncertain — the
-	// upstream Python uses 1, a third-party client uses 3 — so it is a setting
+	// DeepThink asks for the reasoning pass. The wire value is uncertain 鈥?the
+	// upstream Python uses 1, a third-party client uses 3 鈥?so it is a setting
 	// rather than a constant.
 	DeepThink bool
 }
@@ -48,6 +48,24 @@ const maxChatStream = 4 << 20
 // no media store, and with one worker and a ten-minute video timeout a chat
 // queued behind a video would look like a hang.
 func (u *Upstream) Chat(ctx context.Context, cookie string, req ChatRequest, deepThinkValue int) (ChatResult, error) {
+	return u.chat(ctx, cookie, req, deepThinkValue, nil)
+}
+
+// ChatStream is Chat with each piece of text handed to onDelta as it arrives.
+//
+// A caller that wants to forward the reply incrementally gets it while it is
+// being produced rather than after. onDelta returning an error stops the read,
+// which is how a client that has gone away ends the request.
+func (u *Upstream) ChatStream(ctx context.Context, cookie string, req ChatRequest,
+	deepThinkValue int, onDelta func(string) error) (ChatResult, error) {
+	if onDelta == nil {
+		return ChatResult{}, errors.New("chat: ChatStream needs an onDelta callback")
+	}
+	return u.chat(ctx, cookie, req, deepThinkValue, onDelta)
+}
+
+func (u *Upstream) chat(ctx context.Context, cookie string, req ChatRequest,
+	deepThinkValue int, onDelta func(string) error) (ChatResult, error) {
 	if strings.TrimSpace(req.Prompt) == "" {
 		return ChatResult{}, errors.New("chat: empty prompt")
 	}
@@ -72,7 +90,7 @@ func (u *Upstream) Chat(ctx context.Context, cookie string, req ChatRequest, dee
 		return ChatResult{}, fmt.Errorf("chat: upstream status %d: %s", resp.StatusCode, firstLine(raw, 160))
 	}
 
-	return readChatStream(bufio.NewReaderSize(io.LimitReader(resp.Body, maxChatStream), 8<<10))
+	return readChatStream(bufio.NewReaderSize(io.LimitReader(resp.Body, maxChatStream), 8<<10), onDelta)
 }
 
 // A chat turn posts to the same URL the video submit does, so it uses the same
@@ -146,14 +164,13 @@ func buildChatBody(req ChatRequest, now time.Time, deepThinkValue int) ([]byte, 
 }
 
 // readChatStream consumes the reply stream to the end.
-func readChatStream(r *bufio.Reader) (ChatResult, error) {
+func readChatStream(r *bufio.Reader, onDelta func(string) error) (ChatResult, error) {
 	result := ChatResult{}
 	var (
 		event string
 		data  strings.Builder
 		// text accumulates everything the stream emits. A finished reasoning
-		// block marks the boundary between reasoning and answer, and clears it —
-		// which is what the one client known to work against this endpoint does.
+		// block marks the boundary between reasoning and answer, and clears it 鈥?		// which is what the one client known to work against this endpoint does.
 		// Keeping the two apart instead would return nothing at all for a stream
 		// that reasons and never announces the boundary.
 		text strings.Builder
@@ -171,7 +188,7 @@ func readChatStream(r *bufio.Reader) (ChatResult, error) {
 						result.SampleFrames = append(result.SampleFrames,
 							truncateFrame(event, data.String()))
 					}
-					done, ferr := applyChatFrame(event, data.String(), &result, &text)
+					done, ferr := applyChatFrame(event, data.String(), &result, &text, onDelta)
 					if ferr != nil {
 						return result, ferr
 					}
@@ -208,7 +225,7 @@ func truncateFrame(event, data string) string {
 }
 
 // applyChatFrame handles one complete frame, and reports whether the reply is over.
-func applyChatFrame(event, data string, result *ChatResult, text *strings.Builder) (bool, error) {
+func applyChatFrame(event, data string, result *ChatResult, text *strings.Builder, onDelta func(string) error) (bool, error) {
 	switch event {
 	case "SSE_ACK":
 		result.ConversationID = digString(data, "ack_client_meta", "conversation_id")
@@ -223,14 +240,26 @@ func applyChatFrame(event, data string, result *ChatResult, text *strings.Builde
 	// a strict one yields an empty reply, which is indistinguishable from a
 	// working feature that answers nothing.
 	for _, block := range chatBlocks(data) {
-		if finished, ok := block["is_finish"].(bool); ok && finished {
-			if kind, ok := block["block_type"].(float64); ok && int(kind) == blockTypeThinking {
+		thinking := false
+		if kind, ok := block["block_type"].(float64); ok && int(kind) == blockTypeThinking {
+			thinking = true
+			if finished, _ := block["is_finish"].(bool); finished {
 				// The reasoning pass is over, so the answer starts here.
 				text.Reset()
 			}
 		}
 		chunk, _ := blockText(block)
+		if chunk == "" {
+			continue
+		}
 		text.WriteString(chunk)
+		// A stream cannot take back what it has already sent, so reasoning is
+		// not forwarded: the buffer can be cleared, a client's screen cannot.
+		if onDelta != nil && !thinking {
+			if err := onDelta(chunk); err != nil {
+				return true, err
+			}
+		}
 	}
 	return false, nil
 }

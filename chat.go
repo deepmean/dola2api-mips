@@ -71,17 +71,6 @@ func (a *api) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error(), "bad_json")
 		return
 	}
-	if req.Stream {
-		// Streaming is not implemented. Saying so beats sending a body a client
-		// will try to parse as SSE and give up on.
-		writeError(w, http.StatusNotImplemented,
-			"streaming is not supported; send stream=false", "no_streaming")
-		return
-	}
-	if a.upstream == nil || a.accounts == nil {
-		writeError(w, http.StatusServiceUnavailable, "chat is not configured", "no_upstream")
-		return
-	}
 
 	prompt, err := lastUserText(req)
 	if err != nil {
@@ -90,6 +79,15 @@ func (a *api) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(prompt) > 4000 {
 		writeError(w, http.StatusBadRequest, "prompt is too long (4000 characters maximum)", "invalid_request")
+		return
+	}
+
+	if req.Stream {
+		a.handleChatStream(w, r, prompt, req.Model)
+		return
+	}
+	if a.upstream == nil || a.accounts == nil {
+		writeError(w, http.StatusServiceUnavailable, "chat is not configured", "no_upstream")
 		return
 	}
 
@@ -159,6 +157,121 @@ func (a *api) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	resp.Choices[0].FinishReason = "stop"
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleChatStream runs one text turn and forwards the reply as it arrives.
+//
+// The upstream already speaks SSE, so this is a translation rather than a
+// simulation: its deltas become OpenAI chunks. A client that asked for
+// stream=true and got a 501 is a client that cannot use the service at all.
+func (a *api) handleChatStream(w http.ResponseWriter, r *http.Request, prompt, model string) {
+	if a.upstream == nil || a.accounts == nil {
+		writeError(w, http.StatusServiceUnavailable, "chat is not configured", "no_upstream")
+		return
+	}
+	select {
+	case a.chatSlots <- struct{}{}:
+		defer func() { <-a.chatSlots }()
+	default:
+		w.Header().Set("Retry-After", "10")
+		writeError(w, http.StatusTooManyRequests, "too many chat requests in flight", "chat_busy")
+		return
+	}
+
+	account, err := a.accounts.Pick(time.Now())
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "no session available: "+err.Error(), "no_session")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), a.cfg.ChatTimeout)
+	defer cancel()
+
+	completionID := "chatcmpl-" + newUUID()
+	created := time.Now().Unix()
+
+	// Nothing is written until the first delta or the first refusal, so a
+	// refusal can still be reported with its own status code instead of as a
+	// 200 with an error inside it.
+	started := false
+	controller := http.NewResponseController(w)
+
+	emit := func(chunk string) error {
+		if !started {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			// Tells a reverse proxy not to buffer, which would defeat the point.
+			w.Header().Set("X-Accel-Buffering", "no")
+			w.WriteHeader(http.StatusOK)
+			started = true
+		}
+		payload, err := json.Marshal(chatChunk{
+			ID: completionID, Object: "chat.completion.chunk", Created: created, Model: model,
+			Choices: []chatChunkChoice{{Index: 0, Delta: chatDelta{Content: chunk}}},
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+			return err
+		}
+		return controller.Flush()
+	}
+
+	result, err := a.upstream.ChatStream(ctx, account.Cookie, ChatRequest{Prompt: prompt},
+		a.cfg.DeepThinkValue, emit)
+	if err != nil {
+		a.accounts.RecordFailure(account, time.Now(), err)
+		if !started {
+			writeError(w, http.StatusBadGateway, err.Error(), "chat_failed")
+			return
+		}
+		// Headers are already out; the only honest thing left is to end the
+		// stream with the error visible in it.
+		_, _ = fmt.Fprintf(w, "data: {\"error\":%q}\n\ndata: [DONE]\n\n", err.Error())
+		_ = controller.Flush()
+		return
+	}
+	a.accounts.RecordSuccess(account, time.Now())
+
+	if !started {
+		// The upstream answered without any text. Saying so beats an empty
+		// stream a client reads as a finished, empty reply.
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		started = true
+	}
+	final, err := json.Marshal(chatChunk{
+		ID: completionID, Object: "chat.completion.chunk", Created: created, Model: model,
+		ConversationID: result.ConversationID,
+		Choices:        []chatChunkChoice{{Index: 0, Delta: chatDelta{}, FinishReason: "stop"}},
+	})
+	if err == nil {
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", final)
+	}
+	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	_ = controller.Flush()
+}
+
+// chatChunk is one OpenAI streaming chunk.
+type chatChunk struct {
+	ID             string            `json:"id"`
+	Object         string            `json:"object"`
+	Created        int64             `json:"created"`
+	Model          string            `json:"model"`
+	Choices        []chatChunkChoice `json:"choices"`
+	ConversationID string            `json:"conversation_id,omitempty"`
+}
+
+type chatChunkChoice struct {
+	Index        int       `json:"index"`
+	Delta        chatDelta `json:"delta"`
+	FinishReason string    `json:"finish_reason,omitempty"`
+}
+
+type chatDelta struct {
+	Content string `json:"content,omitempty"`
 }
 
 // lastUserText extracts the prompt from the last user message.

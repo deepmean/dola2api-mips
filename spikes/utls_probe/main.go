@@ -48,14 +48,14 @@ var device = map[string]string{
 }
 
 var hellos = map[string]utls.ClientHelloID{
-	"chrome":      utls.HelloChrome_Auto,
-	"chrome-120":  utls.HelloChrome_120,
-	"chrome-131":  utls.HelloChrome_131,
-	"firefox":     utls.HelloFirefox_Auto,
-	"safari":      utls.HelloSafari_Auto,
-	"edge":        utls.HelloEdge_Auto,
-	"randomized":  utls.HelloRandomized,
-	"golang":      utls.HelloGolang,
+	"chrome":     utls.HelloChrome_Auto,
+	"chrome-120": utls.HelloChrome_120,
+	"chrome-131": utls.HelloChrome_131,
+	"firefox":    utls.HelloFirefox_Auto,
+	"safari":     utls.HelloSafari_Auto,
+	"edge":       utls.HelloEdge_Auto,
+	"randomized": utls.HelloRandomized,
+	"golang":     utls.HelloGolang,
 }
 
 func main() {

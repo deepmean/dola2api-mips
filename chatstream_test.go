@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +20,7 @@ func frame(id int, event, data string) string {
 
 func readStream(t *testing.T, stream string) ChatResult {
 	t.Helper()
-	result, err := readChatStream(bufio.NewReader(strings.NewReader(stream)))
+	result, err := readChatStream(bufio.NewReader(strings.NewReader(stream)), nil)
 	if err != nil {
 		t.Fatalf("readChatStream: %v", err)
 	}
@@ -120,7 +121,7 @@ func TestChatStreamReportsRefusals(t *testing.T) {
 	stream := frame(0, "SSE_HEARTBEAT", "{}") +
 		frame(1, "STREAM_ERROR", `{"error_code":710022002,"error_msg":"rate limited"}`)
 
-	_, err := readChatStream(bufio.NewReader(strings.NewReader(stream)))
+	_, err := readChatStream(bufio.NewReader(strings.NewReader(stream)), nil)
 	if err == nil {
 		t.Fatal("a STREAM_ERROR was reported as a successful reply")
 	}
@@ -134,7 +135,7 @@ func TestChatStreamReportsRefusals(t *testing.T) {
 
 func TestChatStreamHandlesTheWrappedRefusal(t *testing.T) {
 	stream := frame(0, "STREAM_ERROR", `{"data":{"error_code":710022004,"error_msg":"slide"}}`)
-	_, err := readChatStream(bufio.NewReader(strings.NewReader(stream)))
+	_, err := readChatStream(bufio.NewReader(strings.NewReader(stream)), nil)
 	if err == nil {
 		t.Fatal("a wrapped refusal was reported as success")
 	}
@@ -159,6 +160,211 @@ func TestChatStreamToleratesATruncatedStream(t *testing.T) {
 	result := readStream(t, frame(0, "STREAM_CHUNK", `{"content":{"content_block":[{"block_type":10000,"content":{"text_block":{"text":"half"}}}]}}`))
 	if result.Reply != "half" {
 		t.Errorf("reply = %q, want what arrived before the stream stopped", result.Reply)
+	}
+}
+
+// A client that asks for stream=true must get a stream. Returning 501 is what
+// made the service unusable for such a client.
+func TestChatStreamEndpointEmitsOpenAIChunks(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			frame(0, "SSE_ACK", `{"ack_client_meta":{"conversation_id":"77"}}`) +
+				frame(1, "STREAM_CHUNK", `{"content":{"content_block":[{"block_type":10000,"content":{"text_block":{"text":"Hel"}}}]}}`) +
+				frame(2, "STREAM_CHUNK", `{"content":{"content_block":[{"block_type":10000,"content":{"text_block":{"text":"lo"}}}]}}`) +
+				frame(3, "SSE_REPLY_END", `{"end_type":3}`)))
+	}))
+	defer srv.Close()
+
+	exec := &fakeExecutor{conversationID: "conv-1"}
+	api, _, accounts := newTestAPI(t, exec, Config{ChatTimeout: 20 * time.Second})
+	egress, err := NewEgress(Config{EgressMode: "direct", FirstByteTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("NewEgress: %v", err)
+	}
+	defer egress.Close()
+	up := NewUpstream(egress)
+	up.base = srv.URL
+	api.upstream = up
+	if len(accounts.Cookies()) == 0 {
+		t.Fatal("the test harness has no session")
+	}
+
+	rec := doRequest(t, apiRouter(api), http.MethodPost, "/v1/chat/completions",
+		`{"stream":true,"messages":[{"role":"user","content":"hi"}]}`, "sk-test")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Errorf("Content-Type = %q, want an event stream", ct)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`"object":"chat.completion.chunk"`, `"content":"Hel"`, `"content":"lo"`,
+		`"finish_reason":"stop"`, "[DONE]"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the stream is missing %s:\n%s", want, body)
+		}
+	}
+	// The deltas must arrive separately, not as one blob at the end.
+	if strings.Count(body, "data: ") < 4 {
+		t.Errorf("the reply was not split into chunks:\n%s", body)
+	}
+}
+
+// A refusal must still be a refusal: nothing is written until the first delta,
+// so the error can carry its own status instead of hiding inside a 200.
+func TestChatStreamRefusalKeepsItsStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(frame(0, "STREAM_ERROR", `{"error_code":710022004,"error_msg":"refused"}`)))
+	}))
+	defer srv.Close()
+
+	exec := &fakeExecutor{conversationID: "conv-1"}
+	api, _, _ := newTestAPI(t, exec, Config{ChatTimeout: 20 * time.Second})
+	egress, err := NewEgress(Config{EgressMode: "direct", FirstByteTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("NewEgress: %v", err)
+	}
+	defer egress.Close()
+	up := NewUpstream(egress)
+	up.base = srv.URL
+	api.upstream = up
+
+	rec := doRequest(t, apiRouter(api), http.MethodPost, "/v1/chat/completions",
+		`{"stream":true,"messages":[{"role":"user","content":"hi"}]}`, "sk-test")
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502: a refusal must not be presented as a finished stream", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "710022004") {
+		t.Errorf("the refusal is missing its code: %s", rec.Body.String())
+	}
+}
+
+// ChatStream hands each piece of text over as it arrives, and stops when the
+// consumer says so.
+func TestChatStreamForwardsDeltas(t *testing.T) {
+	var sawPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawPath = r.URL.Path
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			frame(0, "STREAM_CHUNK", `{"content":{"content_block":[{"block_type":10000,"content":{"text_block":{"text":"a"}}}]}}`) +
+				frame(1, "STREAM_CHUNK", `{"content":{"content_block":[{"block_type":10000,"content":{"text_block":{"text":"b"}}}]}}`) +
+				frame(2, "SSE_REPLY_END", `{"end_type":3}`)))
+	}))
+	defer srv.Close()
+
+	egress, err := NewEgress(Config{EgressMode: "direct", FirstByteTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("NewEgress: %v", err)
+	}
+	defer egress.Close()
+	up := NewUpstream(egress)
+	up.base = srv.URL
+
+	var got []string
+	result, err := up.ChatStream(context.Background(), "sessionid=x",
+		ChatRequest{Prompt: "hi"}, 1, func(chunk string) error {
+			got = append(got, chunk)
+			return nil
+		})
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if strings.Join(got, "") != "ab" {
+		t.Errorf("deltas = %v, want a then b", got)
+	}
+	if result.Reply != "ab" {
+		t.Errorf("reply = %q", result.Reply)
+	}
+	if sawPath != "/chat/completion" {
+		t.Errorf("path = %q", sawPath)
+	}
+}
+
+// Reasoning is not forwarded: a stream cannot take back what it has sent, and
+// the buffer can be cleared but a client's screen cannot.
+func TestChatStreamDoesNotForwardReasoning(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			frame(0, "STREAM_CHUNK", `{"content":{"content_block":[{"block_type":10040,"content":{"thinking_block":{"text":"thinking..."}}}]}}`) +
+				frame(1, "STREAM_CHUNK", `{"content":{"content_block":[{"block_type":10040,"is_finish":true,"content":{"thinking_block":{"text":"."}}}]}}`) +
+				frame(2, "STREAM_CHUNK", `{"content":{"content_block":[{"block_type":10000,"content":{"text_block":{"text":"the answer"}}}]}}`) +
+				frame(3, "SSE_REPLY_END", `{"end_type":3}`)))
+	}))
+	defer srv.Close()
+
+	egress, err := NewEgress(Config{EgressMode: "direct", FirstByteTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("NewEgress: %v", err)
+	}
+	defer egress.Close()
+	up := NewUpstream(egress)
+	up.base = srv.URL
+
+	var got []string
+	if _, err := up.ChatStream(context.Background(), "sessionid=x", ChatRequest{Prompt: "hi"}, 1,
+		func(chunk string) error { got = append(got, chunk); return nil }); err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	joined := strings.Join(got, "")
+	if strings.Contains(joined, "thinking") {
+		t.Errorf("reasoning was forwarded: %q", joined)
+	}
+	if joined != "the answer" {
+		t.Errorf("deltas = %q, want only the answer", joined)
+	}
+}
+
+// A consumer that stops reading ends the upstream request.
+func TestChatStreamStopsWhenTheConsumerStops(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for i := 0; i < 20; i++ {
+			_, _ = w.Write([]byte(frame(i, "STREAM_CHUNK",
+				`{"content":{"content_block":[{"block_type":10000,"content":{"text_block":{"text":"x"}}}]}}`)))
+		}
+	}))
+	defer srv.Close()
+
+	egress, err := NewEgress(Config{EgressMode: "direct", FirstByteTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("NewEgress: %v", err)
+	}
+	defer egress.Close()
+	up := NewUpstream(egress)
+	up.base = srv.URL
+
+	stop := errors.New("client went away")
+	count := 0
+	_, err = up.ChatStream(context.Background(), "sessionid=x", ChatRequest{Prompt: "hi"}, 1,
+		func(string) error {
+			count++
+			if count == 3 {
+				return stop
+			}
+			return nil
+		})
+	if !errors.Is(err, stop) {
+		t.Errorf("err = %v, want the consumer's error", err)
+	}
+	if count != 3 {
+		t.Errorf("the consumer was called %d times, want it to stop at 3", count)
+	}
+}
+
+func TestChatStreamRequiresAConsumer(t *testing.T) {
+	egress, err := NewEgress(Config{EgressMode: "direct"})
+	if err != nil {
+		t.Fatalf("NewEgress: %v", err)
+	}
+	defer egress.Close()
+	up := NewUpstream(egress)
+	if _, err := up.ChatStream(context.Background(), "sessionid=x", ChatRequest{Prompt: "hi"}, 1, nil); err == nil {
+		t.Error("a stream with no consumer was accepted")
 	}
 }
 
