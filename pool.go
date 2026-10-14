@@ -296,6 +296,16 @@ func (p *Pool) run(ctx context.Context, task *Task) {
 		}
 
 		lastErr = err
+		// An upstream-wide refusal is not this session's fault, so parking it
+		// would drain the pool one session at a time until nothing is available
+		// — and then the service reports "no session available", which is a
+		// symptom that hides its own cause. Measured: the browser hits the same
+		// codes, and all four sessions return the same one.
+		if errors.Is(err, ErrUpstreamRateLimited) {
+			p.logger.Printf("task %s: attempt %d/%d with %q refused by the upstream: %v",
+				task.ID, attempt, attempts, candidate.Label, err)
+			continue
+		}
 		p.accounts.RecordFailure(candidate, time.Now(), err)
 		p.logger.Printf("task %s: attempt %d/%d with %q failed: %v",
 			task.ID, attempt, attempts, candidate.Label, err)

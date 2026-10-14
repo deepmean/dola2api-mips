@@ -222,7 +222,13 @@ func (a *api) handleChatStream(w http.ResponseWriter, r *http.Request, prompt, m
 	result, err := a.upstream.ChatStream(ctx, account.Cookie, ChatRequest{Prompt: prompt},
 		a.cfg.DeepThinkValue, emit)
 	if err != nil {
-		a.accounts.RecordFailure(account, time.Now(), err)
+		// Parking the session is only right when the session is what failed.
+		// An upstream-wide refusal parks every session in turn until the pool is
+		// empty and the service reports "no session available", which hides the
+		// cause behind a symptom.
+		if !errors.Is(err, ErrUpstreamRateLimited) {
+			a.accounts.RecordFailure(account, time.Now(), err)
+		}
 		if !started {
 			writeError(w, http.StatusBadGateway, err.Error(), "chat_failed")
 			return

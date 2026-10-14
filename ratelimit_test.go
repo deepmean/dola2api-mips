@@ -94,6 +94,67 @@ func TestPoolStillFailsOverOnAQuotaRefusal(t *testing.T) {
 
 // A per-session fault must still fail over: the classification must not have
 // disabled the failover that already worked.
+// An upstream-wide refusal must not park the sessions.
+//
+// Measured: the browser hits the same codes, and all four sessions return the
+// same one. Parking them anyway drains the pool one session at a time until
+// nothing is available, and the service then reports "no session available" — a
+// symptom that hides its own cause. That is exactly what happened on the device:
+// a client got 503 "no session available" while every session was in fact fine.
+func TestUpstreamWideRefusalDoesNotParkSessions(t *testing.T) {
+	exec := &quotaExecutor{}
+	pool, accounts, _ := newTestPoolWithAccounts(t, exec,
+		`[{"label":"a","cookie":"sessionid=aaa"},{"label":"b","cookie":"sessionid=bbb"},{"label":"c","cookie":"sessionid=ccc"}]`)
+	pool.cfg.SubmitInterval = 0
+	ctx, cancel := newTestContext()
+	defer cancel()
+	pool.Start(ctx)
+	defer pool.Close()
+
+	task, err := pool.Submit(SubmitRequest{Prompt: "a cat"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	waitForState(t, pool, task.ID, TaskFailed)
+
+	if !accounts.Available(time.Now()) {
+		t.Error("an upstream-wide refusal parked every session, which drains the pool " +
+			"and turns a clear cause into 'no session available'")
+	}
+	for _, entry := range accounts.Health(time.Now()) {
+		m := entry.(map[string]any)
+		if remaining := m["cooldown_remaining"].(int); remaining != 0 {
+			t.Errorf("%v is parked for %ds after an upstream-wide refusal", m["label"], remaining)
+		}
+	}
+}
+
+// A per-session fault must still park the session that caused it, or a broken
+// session is retried at the same rate forever.
+func TestPerSessionFaultStillParksTheSession(t *testing.T) {
+	exec := &fakeExecutor{err: errTest}
+	pool, accounts, _ := newTestPoolWithAccounts(t, exec,
+		`[{"label":"a","cookie":"sessionid=aaa"},{"label":"b","cookie":"sessionid=bbb"}]`)
+	pool.cfg.SubmitInterval = 0
+	ctx, cancel := newTestContext()
+	defer cancel()
+	pool.Start(ctx)
+	defer pool.Close()
+
+	task, err := pool.Submit(SubmitRequest{Prompt: "a cat"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	waitForState(t, pool, task.ID, TaskFailed)
+
+	for _, entry := range accounts.Health(time.Now()) {
+		m := entry.(map[string]any)
+		if remaining := m["cooldown_remaining"].(int); remaining == 0 {
+			t.Errorf("%v was not parked after a per-session fault", m["label"])
+		}
+	}
+}
+
 func TestPoolStillFailsOverOnAPerSessionFault(t *testing.T) {
 	exec := &failFirstExecutor{failing: "sessionid=aaa", convID: "conv-ok", failWith: errTest}
 	pool, _, _ := newTestPoolWithAccounts(t, exec,
