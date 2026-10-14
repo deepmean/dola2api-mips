@@ -138,20 +138,64 @@ func main() {
   }
   out.after = describeXHR();
 
-  // The SDK signs what it sees; the stubs record what leaves.
+  // The interceptor stays inert, so try the exported signer directly. A valid
+  // a_bogus is 188-196 characters while X-Bogus is 16, so the length alone says
+  // which one came back.
+  try {
+    var sig = window.bdms.frontierSign;
+    out.signs = {};
+    var shapes = {
+      query: QUERY,
+      pathQuery: "/chat/completion?" + QUERY,
+      fullUrl: "https://www.dola.com/chat/completion?" + QUERY,
+      stub: { "X-MS-STUB": QUERY }
+    };
+    for (var k in shapes) {
+      try {
+        var v = sig(shapes[k]);
+        if (v && typeof v === "object") {
+          var ks = Object.keys(v);
+          out.signs[k] = { keys: ks };
+          for (var j = 0; j < ks.length; j++) {
+            out.signs[k][ks[j]] = { len: String(v[ks[j]]).length, head: String(v[ks[j]]).slice(0, 40) };
+          }
+        } else {
+          out.signs[k] = { type: typeof v, len: String(v).length, head: String(v).slice(0, 40) };
+        }
+      } catch (e) {
+        out.signs[k] = { threw: String(e && e.message ? e.message : e).slice(0, 80) };
+      }
+    }
+  } catch (e) {
+    out.steps.push("frontierSign threw: " + (e && e.message ? e.message : e));
+  }
+
+  // The SDK signs what it sees; the stubs record what leaves. The URL is
+  // relative on purpose: the app requests "/chat/completion?...", and the
+  // configured include list holds paths, so an absolute URL is a different
+  // string for a matcher to compare against.
   try {
     window.__calls.length = 0;
     var x = new XMLHttpRequest();
-    x.open("POST", "https://www.dola.com/chat/completion?" + QUERY);
+    x.open("POST", "/chat/completion?" + QUERY);
     x.send("{}");
     out.calls = window.__calls.slice();
   } catch (e) {
     out.steps.push("xhr threw: " + (e && e.message ? e.message : e));
   }
+  // And once with the absolute form, so the two can be compared.
+  try {
+    var y = new XMLHttpRequest();
+    y.open("POST", "https://www.dola.com/chat/completion?" + QUERY);
+    y.send("{}");
+    out.callsAbs = window.__calls.slice();
+  } catch (e) {
+    out.steps.push("xhr abs threw: " + (e && e.message ? e.message : e));
+  }
   window.__out = JSON.stringify(out);
 })();
 `
-	script = strings.Replace(script, "QUERY", jsString(query), 1)
+	script = strings.ReplaceAll(script, "QUERY", jsString(query))
 	script = strings.Replace(script, "var out = { steps: [], signed: null };", `var out = { steps: [], signed: null };
   function describeXHR() {
     try {
@@ -171,13 +215,14 @@ func main() {
 	raw := vm.Get("__out").String()
 
 	var out struct {
-		Steps  []string       `json:"steps"`
-		Calls  []string       `json:"calls"`
-		Before map[string]any `json:"before"`
-		After  map[string]any `json:"after"`
+		Steps    []string       `json:"steps"`
+		Calls    []string       `json:\"calls\"`
+		CallsAbs []string       `json:\"callsAbs\"`
+		Before   map[string]any `json:"before"`
+		After    map[string]any `json:"after"`
 	}
+	fmt.Println("RAW:", raw)
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		fmt.Println(raw)
 		return
 	}
 	for _, s := range out.Steps {
