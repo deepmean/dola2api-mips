@@ -68,6 +68,15 @@ func main() {
 		fail("prelude: %v", err)
 	}
 
+	// The SDK probes the environment before it does anything, and a probe that
+	// comes back "not a browser" is the likeliest reason a hook stays installed
+	// but inert. These are the signals Chrome exposes and a minimal stub does
+	// not: window.chrome, a non-empty plugin list, and a canvas whose getContext
+	// answers. Installed before the SDK loads, because that is when it probes.
+	if _, err := vm.RunScript("harden.js", harden); err != nil {
+		fail("harden: %v", err)
+	}
+
 	// The chunk only registers its modules; the runtime that installs them lives
 	// in the app's main bundle. Prelude captures the push, the chunk pushes, and
 	// ChunkLoader installs the modules and runs the entry that assigns
@@ -250,7 +259,80 @@ func main() {
 	fmt.Printf("\na_bogus (%d chars): %s\n", len(value), value)
 }
 
-// jsString quotes a string for embedding in JavaScript.
+// harden adds the browser signals the SDK is most likely to probe. A stub that
+// answers "not a browser" is enough to keep the signer switched off, and none of
+// this costs anything on the router because the port will ship a Go
+// implementation, not the SDK.
+const harden = `
+(function () {
+  // window.chrome exists in Chrome and is the first thing a bot check looks at.
+  if (!window.chrome) {
+    window.chrome = {
+      runtime: {},
+      loadTimes: function () {},
+      csi: function () {},
+      app: { isInstalled: false }
+    };
+  }
+
+  // A plugin list that is empty is a strong headless signal, so give it the
+  // entries Chrome reports.
+  var fakePlugin = { name: "PDF Viewer", filename: "internal-pdf-viewer", description: "Portable Document Format" };
+  var fakePlugins = [fakePlugin, { name: "Chrome PDF Viewer", filename: "internal-pdf-viewer", description: "Portable Document Format" }, { name: "Chromium PDF Viewer", filename: "internal-pdf-viewer", description: "Portable Document Format" }];
+  try {
+    Object.defineProperty(window.navigator, "plugins", {
+      get: function () {
+        var arr = fakePlugins.slice();
+        arr.item = function (i) { return this[i] || null; };
+        arr.namedItem = function (n) {
+          for (var i = 0; i < this.length; i++) if (this[i].name === n) return this[i];
+          return null;
+        };
+        return arr;
+      },
+      configurable: true
+    });
+  } catch (e) {}
+
+  // Permissions.query answers "prompt" for notifications in Chrome; an
+  // unstubbed Permissions leaves a signature that walks straight into it.
+  try {
+    if (window.navigator.permissions) {
+      window.navigator.permissions.query = function (desc) {
+        return Promise.resolve({ state: desc && desc.name === "notifications" ? "prompt" : "prompt" });
+      };
+    } else {
+      window.navigator.permissions = { query: function () { return Promise.resolve({ state: "prompt" }); } };
+    }
+  } catch (e) {}
+
+  // webdriver is the other classic check, and it should be false.
+  try { Object.defineProperty(window.navigator, "webdriver", { get: function () { return false; }, configurable: true }); } catch (e) {}
+
+  // A canvas that answers toDataURL, which some signers hash to bind the
+  // signature to the environment.
+  try {
+    var proto = window.HTMLCanvasElement && window.HTMLCanvasElement.prototype;
+    if (proto && !proto.getContext.__stubbed) {
+      var realGetContext = proto.getContext;
+      proto.getContext = function (type) {
+        if (type === "2d") {
+          return {
+            fillRect: function () {}, fillText: function () {}, measureText: function () { return { width: 42 }; },
+            getImageData: function () { return { data: new Array(16) }; },
+            // A deterministic fill pattern, so the same input hashes the same.
+            createLinearGradient: function () { return { addColorStop: function () {} }; },
+            font: "10px sans-serif", textBaseline: "alphabetic", fillStyle: "#000", strokeStyle: "#000"
+          };
+        }
+        try { return realGetContext ? realGetContext.apply(this, arguments) : null; } catch (e) { return null; }
+      };
+      proto.getContext.__stubbed = true;
+    }
+  } catch (e) {}
+})();
+`
+
 func jsString(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
